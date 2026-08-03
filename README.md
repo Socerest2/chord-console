@@ -12,6 +12,8 @@ Open `index.html` in a browser, or serve the folder:
 python3 -m http.server 4173
 ```
 
+Or on the web: https://socerest2.github.io/chord-console/
+
 Browsers block audio until you interact with the page, so click into the prompt once
 before playing.
 
