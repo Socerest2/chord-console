@@ -1,0 +1,1742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chord console</title>
+<style>
+  :root {
+    --bg: #0b0e12;
+    --panel: #11151c;
+    --border: #1e2530;
+    --text: #d7e0ea;
+    --dim: #5c6a7a;
+    --accent: #6ee7a0;
+    --accent-dim: #2e6b48;
+    --amber: #f0c674;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .app {
+    width: 100%;
+    max-width: 680px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* now playing */
+  .now {
+    text-align: center;
+    padding: 28px 12px 20px;
+  }
+  .now .chord-name {
+    font-size: 56px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--accent);
+    min-height: 68px;
+    transition: opacity .3s;
+  }
+  .now .chord-name.idle { color: var(--dim); opacity: .5; font-weight: 400; }
+  .now .chord-notes {
+    margin-top: 6px;
+    color: var(--dim);
+    font-size: 14px;
+    letter-spacing: 4px;
+    min-height: 18px;
+  }
+
+  /* piano */
+  .piano-wrap { display: flex; justify-content: center; }
+  svg.piano { width: 100%; max-width: 560px; height: auto; display: block; }
+  .key-w { fill: #e8edf2; stroke: #0b0e12; stroke-width: 1; rx: 2; }
+  .key-b { fill: #232a34; stroke: #0b0e12; stroke-width: 1; }
+  .key-w.on { fill: var(--accent); }
+  .key-b.on { fill: var(--accent-dim); stroke: var(--accent); }
+
+  /* log */
+  .log {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    height: 150px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.9;
+  }
+  .log .entry { display: flex; gap: 12px; white-space: nowrap; }
+  .log .entry .prompt-char { color: var(--dim); }
+  .log .entry .name { color: var(--text); min-width: 80px; }
+  .log .entry .notes { color: var(--dim); }
+  .log .entry.err .name { color: #e06c75; }
+  .log .hint { color: var(--dim); }
+
+  /* console input */
+  .console {
+    position: relative;
+  }
+  .input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .input-row:focus-within { border-color: var(--accent-dim); }
+  .input-row .prompt-char { color: var(--accent); font-weight: 700; }
+  .input-wrap { position: relative; flex: 1; }
+  input#cmd {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 18px;
+    caret-color: var(--accent);
+    position: relative;
+    z-index: 2;
+  }
+  #ghost {
+    position: absolute;
+    left: 0; top: 0;
+    font-size: 18px;
+    color: var(--dim);
+    opacity: .55;
+    pointer-events: none;
+    white-space: pre;
+    z-index: 1;
+  }
+  #ghost .typed { visibility: hidden; }
+
+  /* suggestions */
+  .suggestions {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: calc(100% + 6px);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    display: none;
+    z-index: 10;
+  }
+  .suggestions.open { display: block; }
+  .suggestions .item {
+    padding: 7px 14px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .suggestions .item .notes { color: var(--dim); font-size: 12px; letter-spacing: 2px; }
+  .suggestions .item.sel { background: #1a2230; }
+  .suggestions .item.sel .name { color: var(--accent); }
+
+  /* key chips */
+  .chips {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+  }
+  .chips.open { display: flex; }
+  .chips button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    padding: 5px 10px 3px;
+    cursor: pointer;
+    text-align: center;
+    line-height: 1.3;
+  }
+  .chips button:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .chips button small { display: block; color: var(--dim); font-size: 10px; }
+
+  /* progression chips */
+  .prog {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+  }
+  .prog.open { display: flex; }
+  .prog .label { color: var(--dim); font-size: 11px; letter-spacing: 1px; }
+  .prog button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  .prog button:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .prog button.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: #16241d;
+  }
+  .prog button.queued {
+    border-color: var(--amber);
+    color: var(--amber);
+    border-style: dashed;
+  }
+
+  /* status bar */
+  .status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    justify-content: center;
+    align-items: center;
+    color: var(--dim);
+    font-size: 12px;
+  }
+  .status .val { color: var(--amber); }
+  .beats { display: inline-flex; gap: 5px; margin-left: 8px; vertical-align: middle; }
+  .beats i {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--border);
+  }
+  .beats i.on { background: var(--amber); }
+  .status .pill {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    font-size: 10px;
+  }
+  .status .pill.on {
+    border-color: #e0864c;
+    color: #f0a068;
+    background: #241812;
+  }
+  .status .rec { display: none; align-items: center; gap: 6px; }
+  .status .rec.on { display: inline-flex; }
+  .status .rec .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #e06c75;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) {
+    .status .rec .dot { animation: none; }
+  }
+
+  .footer {
+    text-align: center;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.8;
+  }
+  .footer b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="now">
+    <div class="chord-name idle" id="nowChord">chord console</div>
+    <div class="chord-notes" id="nowNotes"></div>
+  </div>
+
+  <div class="piano-wrap">
+    <svg class="piano" id="piano" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+
+  <div class="chips" id="chips"></div>
+  <div class="prog" id="sections"></div>
+  <div class="prog" id="prog"></div>
+
+  <div class="log" id="log">
+    <div class="hint">type a chord and hit enter — it holds until the next one.</div>
+    <div class="hint">try: cmaj7 · am9 · fmaj7 · g7 · c/e · bbm7 · f#7sus4</div>
+    <div class="hint">commands: key g · bpm 92 · oct -1 · loop · rec · help</div>
+    <div class="hint">feel: roll · arp · noodle · pluck 1 3 5 3 — or tap 1-8 by hand</div>
+    <div class="hint">keep one for the progression: cmaj7 p — or p on to keep them all</div>
+    <div class="hint">parts: loop start verse → play it → loop end, then just type verse</div>
+  </div>
+
+  <div class="console">
+    <div class="suggestions" id="sugg"></div>
+    <div class="input-row" onclick="document.getElementById('cmd').focus()">
+      <span class="prompt-char">&gt;</span>
+      <div class="input-wrap">
+        <div id="ghost"></div>
+        <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="cmaj7" autofocus>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status">
+    <span>key <span class="val" id="stKey">—</span></span>
+    <span>bpm <span class="val" id="stBpm">—</span><span class="beats" id="beats"><i></i><i></i><i></i><i></i></span></span>
+    <span>oct <span class="val" id="stOct">0</span></span>
+    <span>style <span class="val" id="stStyle">pad</span></span>
+    <span>keep <span class="val" id="stKeep">off</span></span>
+    <span>loop <span class="val" id="stLoop">off</span></span>
+    <span class="pill" id="fillPill">FILL</span>
+    <span class="rec" id="recBadge"><span class="dot"></span><span id="recTime">0:00</span></span>
+  </div>
+
+  <div class="footer">
+    <b>tab</b> autocomplete · <b>↑↓</b> pick / history · <b>enter</b> play · <b>esc</b> stop · <b>alt+↑↓</b> octave · <b>1-8</b> pluck · <b>help</b>
+  </div>
+</div>
+
+<script>
+/* ---------------- music theory ---------------- */
+const NOTE_OFFSETS = { c:0, d:2, e:4, f:5, g:7, a:9, b:11 };
+const PC_NAMES_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const PC_NAMES_FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+
+const QUALITIES = [
+  ['',      [0,4,7]],
+  ['m',     [0,3,7]],
+  ['7',     [0,4,7,10]],
+  ['maj7',  [0,4,7,11]],
+  ['m7',    [0,3,7,10]],
+  ['6',     [0,4,7,9]],
+  ['m6',    [0,3,7,9]],
+  ['9',     [0,4,7,10,14]],
+  ['maj9',  [0,4,7,11,14]],
+  ['m9',    [0,3,7,10,14]],
+  ['add9',  [0,4,7,14]],
+  ['sus2',  [0,2,7]],
+  ['sus4',  [0,5,7]],
+  ['7sus4', [0,5,7,10]],
+  ['dim',   [0,3,6]],
+  ['dim7',  [0,3,6,9]],
+  ['m7b5',  [0,3,6,10]],
+  ['aug',   [0,4,8]],
+  ['mmaj7', [0,3,7,11]],
+  ['11',    [0,4,7,10,14,17]],
+  ['13',    [0,4,7,10,14,21]],
+];
+const QUALITY_MAP = Object.fromEntries(QUALITIES);
+const QUALITY_ALIASES = { 'maj':'', 'major':'', 'min':'m', 'minor':'m', '-':'m', 'min7':'m7', '-7':'m7', 'ma7':'maj7' };
+
+/* session settings */
+const state = {
+  key: null,       // { pc, minor, flat }
+  bpm: 0,
+  octave: 0,       // -2 .. +2, shifts the whole voicing
+  style: 'pad',    // pad | roll | arp | noodle | pluck
+  pluckSeq: [1, 3, 5, 3],  // chord-tone indices for the pluck style (null = rest)
+  prog: [],        // the progression, built only from chords you keep
+  progBeats: [],   // per-chord beat counts from "learn" (empty = every chord gets loopBars)
+  capture: false,  // "p on" — auto-keep every chord you play
+  loop: false,
+  loopBars: 1,     // bars each chord holds while looping (when not learned)
+  loopPos: 0,      // index of the chord the loop plays next
+  loopNextBeat: 0, // transport beat the next chord change lands on
+  sections: {},    // name -> { chords, beats, bpm } — verse, chorus, bridge…
+  section: null,   // which one is playing
+  pending: null,   // one queued to take over at the next chord change
+  click: false,    // metronome audible
+  fill: false,     // audible drum fill before each chord change ("fill on")
+};
+const STYLES = ['pad', 'roll', 'arp', 'noodle', 'pluck'];
+const STYLE_BED = { pad: 1.0, roll: 1.0, arp: 0.3, noodle: 0.45, pluck: 0.35 }; // pad level per style
+
+/* diatonic chords per scale degree */
+const MAJ_SCALE = [0,2,4,5,7,9,11];
+const MIN_SCALE = [0,2,3,5,7,8,10];
+const MAJ_TRIADS   = ['','m','m','','','m','dim'];
+const MIN_TRIADS   = ['m','dim','','m','m','',''];
+const MAJ_SEVENTHS = ['maj7','m7','m7','maj7','7','m7','m7b5'];
+const MIN_SEVENTHS = ['m7','m7b5','maj7','m7','m7','maj7','7'];
+const MAJ_ROMANS   = ['I','ii','iii','IV','V','vi','vii°'];
+const MIN_ROMANS   = ['i','ii°','III','iv','v','VI','VII'];
+
+// if a chord root is diatonic to the current key, return its [triad, seventh] qualities
+function diatonicQuals(rootPc) {
+  if (!state.key) return null;
+  const scale = state.key.minor ? MIN_SCALE : MAJ_SCALE;
+  const deg = scale.indexOf((rootPc - state.key.pc + 12) % 12);
+  if (deg < 0) return null;
+  return [
+    (state.key.minor ? MIN_TRIADS : MAJ_TRIADS)[deg],
+    (state.key.minor ? MIN_SEVENTHS : MAJ_SEVENTHS)[deg],
+  ];
+}
+
+// parse a root token like "c", "f#", "bb" -> {pc, len, flat}
+function parseRoot(s) {
+  const m = /^([a-g])(#|b)?/.exec(s);
+  if (!m) return null;
+  let pc = NOTE_OFFSETS[m[1]];
+  let flat = false;
+  if (m[2] === '#') pc = (pc + 1) % 12;
+  if (m[2] === 'b') { pc = (pc + 11) % 12; flat = true; }
+  return { pc, len: m[0].length, flat };
+}
+
+function rootDisplay(raw) { // "f#" -> "F#", "bb" -> "Bb"
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+// parse full chord string (already lowercased/trimmed). returns null or chord object
+function parseChord(input) {
+  let bassPc = null, bassRaw = null;
+  let main = input;
+  const slash = input.indexOf('/');
+  if (slash > 0) {
+    main = input.slice(0, slash);
+    const b = parseRoot(input.slice(slash + 1));
+    if (!b || slash + 1 + b.len !== input.length) return null;
+    bassPc = b.pc;
+    bassRaw = input.slice(slash + 1);
+  }
+  const r = parseRoot(main);
+  if (!r) return null;
+  let qual = main.slice(r.len);
+  if (QUALITY_ALIASES[qual] !== undefined) qual = QUALITY_ALIASES[qual];
+  const intervals = QUALITY_MAP[qual];
+  if (!intervals) return null;
+  const name = rootDisplay(main.slice(0, r.len)) + qual + (bassRaw ? '/' + rootDisplay(bassRaw) : '');
+  const pcs = intervals.map(i => (r.pc + i) % 12);
+  return { name, rootPc: r.pc, intervals, pcs, bassPc: bassPc === null ? r.pc : bassPc, flat: r.flat };
+}
+
+function noteNames(chord) {
+  const table = chord.flat ? PC_NAMES_FLAT : PC_NAMES_SHARP;
+  return chord.pcs.map(pc => table[pc]);
+}
+
+// voicing: bass note low, chord tones packed in one octave around middle C
+function voiceChord(chord) {
+  const shift = state.octave * 12;
+  const midis = [];
+  midis.push(36 + chord.bassPc + (chord.bassPc < 5 ? 12 : 0) + shift); // bass ~C2-F3
+  for (const iv of chord.intervals) {
+    midis.push(60 + ((chord.rootPc + iv) % 12) + shift);
+  }
+  return [...new Set(midis)].filter(m => m >= 12 && m <= 108).sort((a, b) => a - b);
+}
+
+const midiToFreq = m => 440 * Math.pow(2, (m - 69) / 12);
+
+/* ---------------- audio ---------------- */
+let ctx = null, master = null, mix = null; // mix = post-compressor tap the recorder listens to
+let current = null; // { gain, oscs, chord }
+
+function ensureCtx() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.ratio.value = 6;
+    master = ctx.createGain();
+    master.gain.value = 0.7;
+    mix = ctx.createGain();
+    master.connect(comp);
+    comp.connect(mix);
+    mix.connect(ctx.destination);
+  }
+  if (ctx.state === 'suspended') ctx.resume();
+}
+
+function buildPad(midis, delays) {
+  const t = ctx.currentTime;
+  const chordGain = ctx.createGain();
+  chordGain.gain.setValueAtTime(0.0001, t);
+  chordGain.connect(master);
+
+  const oscs = [];
+  const per = 0.9 / Math.max(midis.length, 3); // per-note level
+
+  midis.forEach((m, idx) => {
+    const freq = midiToFreq(m);
+    const target = idx === 0 ? per * 1.3 : per; // bass a bit louder
+    const delay = delays ? delays[idx] : 0;
+    const noteGain = ctx.createGain();
+    noteGain.gain.setValueAtTime(0.0001, t);
+    noteGain.gain.exponentialRampToValueAtTime(target, t + delay + 0.03);
+
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = Math.min(freq * 6, 2200);
+    filt.Q.value = 0.5;
+
+    noteGain.connect(filt);
+    filt.connect(chordGain);
+
+    const detunes = idx === 0 ? [0] : [-6, 6];
+    for (const d of detunes) {
+      const osc = ctx.createOscillator();
+      osc.type = idx === 0 ? 'triangle' : 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = d + (Math.random() * 2 - 1);
+      osc.connect(noteGain);
+      osc.start(t);
+      oscs.push(osc);
+    }
+    // soft sine an octave up for shimmer on top voice
+    if (idx === midis.length - 1) {
+      const shimmer = ctx.createOscillator();
+      shimmer.type = 'sine';
+      shimmer.frequency.value = freq * 2;
+      const sg = ctx.createGain();
+      sg.gain.value = per * 0.25;
+      shimmer.connect(sg); sg.connect(chordGain);
+      shimmer.start(t);
+      oscs.push(shimmer);
+    }
+  });
+
+  return { gain: chordGain, oscs };
+}
+
+function playChord(chord) {
+  ensureCtx();
+  const t = ctx.currentTime;
+  releaseCurrent(0.7);
+
+  const midis = voiceChord(chord);
+  // roll = pianist-style stagger, low to high; otherwise a tiny humanize offset
+  const delays = midis.map((_, i) =>
+    state.style === 'roll' ? i * 0.055 + Math.random() * 0.015 : Math.random() * 0.02
+  );
+  const bed = STYLE_BED[state.style];
+  const pad = buildPad(midis, delays);
+  pad.gain.gain.setValueAtTime(0.0001, t);
+  pad.gain.gain.exponentialRampToValueAtTime(bed, t + 0.09);
+  pad.gain.gain.exponentialRampToValueAtTime(bed * 0.75, t + 1.4);
+
+  current = { ...pad, chord, midis };
+  startPattern();
+  renderNow(chord, midis);
+}
+
+function releaseCurrent(release) {
+  if (!current) return;
+  const t = ctx.currentTime;
+  const { gain, oscs } = current;
+  gain.gain.cancelScheduledValues(t);
+  gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + release);
+  for (const o of oscs) o.stop(t + release + 0.1);
+  setTimeout(() => gain.disconnect(), (release + 0.2) * 1000);
+  current = null;
+}
+
+function stopAll() {
+  stopPattern();
+  state.loop = false;
+  state.click = false;
+  state.pending = null;
+  if (learn.on) cancelLearn(true);
+  stopTransport();
+  if (ctx) releaseCurrent(0.5);
+  renderNow(null, []);
+  renderProg(-1);
+  renderSections();
+  renderStatus();
+}
+
+/* ---------------- plucks & play styles ---------------- */
+// a single struck note that decays on its own — used for arp/noodle/manual plucking
+function pluck(midi, vel = 0.18, when = 0) {
+  ensureCtx();
+  const t = Math.max(when || ctx.currentTime, ctx.currentTime) + 0.001;
+  const freq = midiToFreq(midi);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vel, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 1.5);
+  const filt = ctx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = Math.min(freq * 5, 2600);
+  filt.Q.value = 0.4;
+  filt.connect(g); g.connect(master);
+  const o1 = ctx.createOscillator();
+  o1.type = 'triangle'; o1.frequency.value = freq;
+  const o2 = ctx.createOscillator();
+  o2.type = 'sawtooth'; o2.frequency.value = freq; o2.detune.value = 5;
+  const g2 = ctx.createGain(); g2.gain.value = 0.3;
+  o1.connect(filt);
+  o2.connect(g2); g2.connect(filt);
+  o1.start(t); o2.start(t);
+  o1.stop(t + 1.7); o2.stop(t + 1.7);
+}
+
+// pluck the nth tone of the held chord (0 = bass); indexes past the top wrap up an octave
+function pluckIndex(idx) {
+  if (!current) return;
+  const notes = current.midis;
+  const m = notes[idx % notes.length] + 12 * Math.floor(idx / notes.length);
+  pluck(m, 0.2 + Math.random() * 0.05);
+}
+
+const pattern = { timer: null, next: 0, step: 0 };
+const beatLen = () => 60 / (state.bpm || 100);
+
+const PATTERN_STYLES = ['arp', 'noodle', 'pluck'];
+
+function startPattern() {
+  stopPattern();
+  if (!PATTERN_STYLES.includes(state.style)) return;
+  ensureCtx();
+  pattern.next = ctx.currentTime + 0.08;
+  pattern.step = 0;
+  pattern.timer = setInterval(patternTick, 30);
+}
+function stopPattern() {
+  if (pattern.timer) { clearInterval(pattern.timer); pattern.timer = null; }
+}
+
+function patternTick() {
+  if (!current) return;
+  const ahead = ctx.currentTime + 0.18;
+  while (pattern.next < ahead) {
+    const notes = current.midis;
+    if (state.style === 'arp') {
+      // up and back down, eighth notes
+      const n = notes.length;
+      const period = Math.max(2 * n - 2, 1);
+      const i = pattern.step % period;
+      const idx = i < n ? i : period - i;
+      pluck(notes[idx], 0.15 + Math.random() * 0.04, pattern.next);
+      pattern.step++;
+      pattern.next += beatLen() / 2;
+    } else if (state.style === 'pluck') {
+      // your own pattern of chord-tone numbers, eighth notes, "." = rest
+      const seq = state.pluckSeq;
+      const tok = seq[pattern.step % seq.length];
+      if (tok !== null) {
+        const i = tok - 1;
+        pluck(notes[i % notes.length] + 12 * Math.floor(i / notes.length),
+              0.17 + Math.random() * 0.05, pattern.next);
+      }
+      pattern.step++;
+      pattern.next += beatLen() / 2;
+    } else { // noodle: wander the upper chord tones, uneven timing, occasional rest
+      const tones = notes.length > 1 ? notes.slice(1) : notes;
+      if (Math.random() < 0.82) {
+        let m = tones[Math.floor(Math.random() * tones.length)];
+        if (Math.random() < 0.3) m += 12;
+        pluck(m, 0.07 + Math.random() * 0.12, pattern.next);
+        if (Math.random() < 0.2) { // grace note tumbling after
+          const m2 = tones[Math.floor(Math.random() * tones.length)];
+          pluck(m2, 0.05 + Math.random() * 0.07, pattern.next + 0.03 + Math.random() * 0.06);
+        }
+      }
+      const gaps = [0.25, 0.5, 0.5, 0.75, 1, 1.5];
+      pattern.next += gaps[Math.floor(Math.random() * gaps.length)] * beatLen();
+    }
+  }
+}
+
+function setStyle(name) {
+  if (!STYLES.includes(name)) {
+    logMsg('styles: pad · roll · arp · noodle · pluck');
+    return;
+  }
+  state.style = name;
+  renderStatus();
+  logMsg(`style ${name}`);
+  if (current) playChord(current.chord); // re-trigger so the new feel kicks in
+  else stopPattern();
+}
+
+// "pluck 1 3 5 3" / "pluck 1353" / "pluck 1 . 5 3" — chord-tone numbers, "." rests
+function setPluck(args) {
+  if (args[0] === 'off' || args[0] === 'stop') { setStyle('pad'); return; }
+  let tokens = args;
+  if (args.length === 1 && /^[1-8.\-]{2,}$/.test(args[0])) tokens = args[0].split('');
+  if (tokens.length) {
+    const seq = [];
+    for (const tok of tokens) {
+      if (tok === '.' || tok === '-' || tok === '0') { seq.push(null); continue; }
+      const n = parseInt(tok, 10);
+      if (isNaN(n) || n < 1 || n > 8) {
+        logMsg('pluck takes tone numbers 1-8 and "." for a rest: pluck 1 3 5 3');
+        return;
+      }
+      seq.push(n);
+    }
+    state.pluckSeq = seq;
+  }
+  setStyle('pluck');
+  logMsg(`pluck ${state.pluckSeq.map(n => n ?? '.').join(' ')} — 1 is the bass, counting up`);
+}
+
+/* ---------------- drums ---------------- */
+let noiseBuf = null;
+function noise() {
+  if (!noiseBuf) {
+    const len = Math.floor(ctx.sampleRate * 0.4);
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf;
+  return src;
+}
+
+function drumHit(kind, time, vel = 1) {
+  ensureCtx();
+  const t = Math.max(time, ctx.currentTime);
+  const g = ctx.createGain();
+  g.connect(master);
+  if (kind === 'kick') {
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(130, t);
+    o.frequency.exponentialRampToValueAtTime(46, t + 0.09);
+    g.gain.setValueAtTime(0.5 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+    o.connect(g); o.start(t); o.stop(t + 0.3);
+  } else if (kind === 'snare') {
+    const n = noise();
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1900; bp.Q.value = 0.7;
+    g.gain.setValueAtTime(0.3 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    n.connect(bp); bp.connect(g); n.start(t); n.stop(t + 0.2);
+    const o = ctx.createOscillator();  // body
+    o.type = 'triangle'; o.frequency.value = 190;
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.18 * vel, t);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    o.connect(og); og.connect(master); o.start(t); o.stop(t + 0.12);
+  } else { // hat
+    const n = noise();
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 7000;
+    g.gain.setValueAtTime(0.13 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    n.connect(hp); hp.connect(g); n.start(t); n.stop(t + 0.07);
+  }
+}
+
+// a one-beat fill leading into the next chord; "big" = wrapping back to the top
+function drumFill(time, big) {
+  const six = beatLen() / 4;
+  if (big) {
+    for (let i = 0; i < 4; i++) drumHit('snare', time + i * six, 0.5 + i * 0.16);
+    drumHit('kick', time + beatLen(), 1);
+  } else {
+    drumHit('hat', time, 0.9);
+    drumHit('snare', time + six * 2, 0.6);
+    drumHit('snare', time + six * 3, 0.8);
+  }
+}
+
+/* ---------------- transport (clock for the click, loop & fills) ---------------- */
+const transport = { next: 0, beat: 0, timer: null };
+
+function clickSound(time, accent) {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'sine';
+  o.frequency.value = accent ? 1500 : 950;
+  g.gain.setValueAtTime(accent ? 0.28 : 0.16, time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+  o.connect(g); g.connect(master);
+  o.start(time); o.stop(time + 0.08);
+}
+
+function transportNeeded() {
+  return state.bpm > 0 && (state.click || state.loop);
+}
+
+// how many beats chord #i holds — learned from your playing, or the uniform bar count
+function beatsForChord(i) { return state.progBeats[i] || state.loopBars * 4; }
+
+function startTransport(restart) {
+  if (!transportNeeded()) { stopTransport(); return; }
+  ensureCtx();
+  if (transport.timer && !restart) return;
+  stopTransport();
+  transport.next = ctx.currentTime + 0.12;
+  transport.beat = 0;
+  transport.timer = setInterval(transportTick, 25);
+}
+
+function stopTransport() {
+  if (transport.timer) { clearInterval(transport.timer); transport.timer = null; }
+  flashBeat(-1, 0);
+  armFill(false, 0);
+}
+
+function transportTick() {
+  if (!state.bpm || !ctx) return;
+  const ahead = ctx.currentTime + 0.2;
+  while (transport.next < ahead) {
+    const t = transport.next;
+    const beat = transport.beat;
+    const delayMs = (t - ctx.currentTime) * 1000;
+
+    if (state.click) clickSound(t, beat % 4 === 0);
+    flashBeat(beat % 4, delayMs);
+
+    if (state.loop && state.prog.length) {
+      if (beat >= state.loopNextBeat) {
+        // a queued section takes over right on the change, straight after the fill
+        if (state.pending) {
+          applySection(state.pending);
+          state.pending = null;
+          setTimeout(() => { renderSections(); renderStatus(); }, Math.max(0, delayMs));
+        }
+        const idx = state.loopPos % state.prog.length;
+        scheduleLoopChord(state.prog[idx], t, idx, delayMs);
+        state.loopPos = (idx + 1) % state.prog.length;
+        state.loopNextBeat = beat + beatsForChord(idx);
+        armFill(false, delayMs);
+      }
+      // one beat before the next change, cue the fill
+      if (beat === state.loopNextBeat - 1 && beat > 0 && state.fill) {
+        drumFill(t, state.loopPos === 0 && state.prog.length > 1);
+        armFill(true, delayMs);
+      }
+    }
+
+    transport.beat++;
+    transport.next += 60 / state.bpm;
+  }
+}
+
+// fire a loop chord at its scheduled beat (audio is sample-accurate enough for a pad)
+function scheduleLoopChord(chordStr, time, idx, delayMs) {
+  setTimeout(() => {
+    const chord = parseChord(chordStr);
+    if (chord) { playChord(chord); renderProg(idx); }
+  }, Math.max(0, delayMs));
+}
+
+function setBpm(n) {
+  state.bpm = n;
+  if (n > 0) {
+    state.click = true;
+    startTransport(true);
+  } else {
+    state.click = false;
+    state.loop = false;
+    stopTransport();
+  }
+  renderStatus();
+}
+
+function setLoop(arg) {
+  if (arg === 'off' || arg === 'stop') {
+    state.loop = false;
+    startTransport(false);
+    if (!transportNeeded()) stopTransport();
+    renderStatus(); renderProg(-1);
+    logMsg('loop off');
+    return;
+  }
+  if (!state.prog.length) {
+    logMsg('nothing to loop yet — keep some chords first (cmaj7 p), or: prog cmaj7 am7 fmaj7 g7');
+    return;
+  }
+  const bars = parseInt(arg, 10);
+  if (arg !== undefined && (isNaN(bars) || bars < 1 || bars > 8)) {
+    logMsg('loop takes bars per chord, 1–8: loop, loop 2, loop off');
+    return;
+  }
+  if (!isNaN(bars)) { state.loopBars = bars; state.progBeats = []; } // an explicit bar count overrides learned timing
+  if (!state.bpm) { state.bpm = 100; state.click = true; logMsg('no tempo set — using bpm 100'); }
+  state.loop = true;
+  state.loopPos = 0;
+  state.loopNextBeat = 0;
+  startTransport(true);
+  renderStatus(); renderProg(-1);
+  logMsg(state.progBeats.length
+    ? `loop on — ${state.prog.length} chords with the timing you played`
+    : `loop on — ${state.prog.length} chords, ${state.loopBars} bar${state.loopBars > 1 ? 's' : ''} each`);
+}
+
+/* ---------------- learn: play it once, keep your timing ---------------- */
+const learn = { on: false, marks: [], name: null };
+
+const RESERVED = ['stop','x','key','bpm','style','oct','octave','pluck','loop','learn','done',
+  'rec','record','save','load','saves','list','prog','clear','fill','click','help','p','sections','end','start'];
+
+function validName(name) {
+  if (!name) { logMsg('name it: loop start verse'); return false; }
+  if (RESERVED.includes(name) || STYLES.includes(name)) {
+    logMsg(`"${name}" is a command — pick another name`); return false;
+  }
+  if (parseChord(name)) { logMsg(`"${name}" is a chord name — pick something like verse or chorus`); return false; }
+  return true;
+}
+
+function startLearn(name) {
+  if (name !== undefined && !validName(name)) return;
+  ensureCtx();
+  learn.on = true;
+  learn.marks = [];
+  learn.name = name ?? null;
+  state.loop = false;
+  state.prog = [];
+  state.progBeats = [];
+  state.section = null;
+  stopTransport();
+  renderProg(-1); renderSections(); renderStatus();
+  logMsg(name
+    ? `recording "${name}" — play it through once, holding each chord as long as you want it`
+    : 'learn — play your progression through once, holding each chord as long as you want it');
+  logMsg(name ? `then "loop end" — after that just type ${name} to play it` : 'then type "done" and it will work out the tempo and loop it back');
+}
+
+function applySection(name) {
+  const sec = state.sections[name];
+  if (!sec) return false;
+  state.prog = [...sec.chords];
+  state.progBeats = [...sec.beats];
+  state.section = name;
+  state.loopPos = 0;
+  return true;
+}
+
+function deleteSection(name) {
+  const names = Object.keys(state.sections);
+  if (!name || !state.sections[name]) {
+    logMsg(names.length ? `no part called "${name || '?'}" — you have: ${names.join(', ')}` : 'no parts to delete yet');
+    return;
+  }
+  delete state.sections[name];
+  if (state.pending === name) state.pending = null;
+  if (state.section === name) {
+    state.section = null;
+    state.loop = false;
+    state.prog = [];
+    state.progBeats = [];
+    if (!transportNeeded()) stopTransport();
+    renderProg(-1);
+  }
+  renderSections(); renderStatus();
+  const left = Object.keys(state.sections);
+  logMsg(`deleted "${name}"${left.length ? ` — left: ${left.join(', ')}` : ' — no parts left'}`);
+}
+
+// type a section's name to play it — queued to the next chord change if something's already going
+function playSection(name) {
+  const sec = state.sections[name];
+  if (!sec) return false;
+  if (state.loop && state.prog.length) {
+    state.pending = name;
+    renderSections();
+    logMsg(`${name} queued — comes in at the next chord change`);
+  } else {
+    applySection(name);
+    if (!state.bpm) state.bpm = sec.bpm || 100;
+    state.loop = true;
+    state.loopNextBeat = 0;
+    startTransport(true);
+    renderProg(-1); renderSections(); renderStatus();
+    logMsg(`${name} — ${sec.chords.length} chords at ${state.bpm} bpm`);
+  }
+  return true;
+}
+
+function markLearn(chordStr) {
+  learn.marks.push({ chord: chordStr, at: ctx.currentTime });
+  state.prog.push(chordStr);
+  renderProg(state.prog.length - 1);
+}
+
+/* Turn the times you actually played into a tempo and a whole number of beats per chord.
+   Human timing is loose — especially the last chord, which ends whenever you type — so the
+   grid is fitted across the whole take and the total is snapped to full bars. */
+function inferTiming(durs, presetBpm) {
+  if (presetBpm) return { bpm: presetBpm, beats: quantize(durs, presetBpm), preset: true };
+
+  // start from the assumption that your most typical chord lasted one bar
+  const sorted = [...durs].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  let seed = 240 / median;
+  while (seed < 60) seed *= 2;    // you were holding chords for several bars
+  while (seed > 190) seed /= 2;   // or changing every couple of beats
+
+  // refine around that seed: pick the tempo that lands everything closest to whole beats
+  let best = { bpm: seed, err: Infinity };
+  for (let bpm = seed * 0.82; bpm <= seed * 1.22; bpm += 0.25) {
+    const bl = 60 / bpm;
+    let err = 0;
+    durs.forEach((d, i) => {
+      const b = d / bl;
+      const r = Math.max(1, Math.round(b));
+      // the final chord ends when you type, so it gets much less say in the tempo
+      err += (i === durs.length - 1 ? 0.25 : 1) * Math.pow(b - r, 2);
+    });
+    if (err < best.err) best = { bpm, err };
+  }
+  const bpm = Math.round(best.bpm);
+  return { bpm, beats: quantize(durs, bpm), preset: false };
+}
+
+function quantize(durs, bpm) {
+  const bl = 60 / bpm;
+  const beats = durs.map(d => Math.max(1, Math.round(d / bl)));
+  // songs come in whole bars — nudge the last chord so the loop closes properly
+  const total = beats.reduce((a, b) => a + b, 0);
+  const target = Math.max(4, Math.round(total / 4) * 4);
+  const diff = target - total;
+  if (diff !== 0 && Math.abs(diff) <= 2 && beats[beats.length - 1] + diff >= 1) {
+    beats[beats.length - 1] += diff;
+  }
+  return beats;
+}
+
+function cancelLearn(quiet) {
+  learn.on = false;
+  learn.marks = [];
+  if (!quiet) logMsg('learn cancelled');
+}
+
+function finishLearn() {
+  if (!learn.on) { logMsg('not learning — type "learn" first'); return; }
+  const marks = learn.marks;
+  if (marks.length < 2) {
+    logMsg('need at least two chords — type "learn" and play through it again');
+    cancelLearn(true);
+    return;
+  }
+  learn.on = false;
+  const end = ctx.currentTime;
+  const durs = marks.map((m, i) => (i + 1 < marks.length ? marks[i + 1].at : end) - m.at);
+  const { bpm, beats, preset } = inferTiming(durs, state.bpm);
+
+  state.bpm = bpm;
+  state.progBeats = beats;
+  state.loopPos = 0;
+  state.loopNextBeat = 0;
+  state.loop = true;
+  state.click = false;
+
+  const name = learn.name;
+  if (name) {
+    state.sections[name] = { chords: marks.map(m => m.chord), beats, bpm };
+    state.section = name;
+    }
+  learn.name = null;
+  startTransport(true);
+  renderProg(-1); renderSections(); renderStatus();
+
+  const shape = marks.map((m, i) => `${parseChord(m.chord).name}·${beats[i]}`).join(' ');
+  const bars = beats.reduce((a, b) => a + b, 0) / 4;
+  logMsg(`${name ? `"${name}" ` : ''}learned — ${bpm} bpm${preset ? ' (yours)' : ''}, ${bars} bars — ${shape}  (numbers are beats)`);
+  logMsg(name
+    ? `looping it now — type ${name} any time to come back to it, or record another: loop start chorus`
+    : 'looping it back now — "loop off" to stop, "click on" for the metronome');
+}
+
+/* ---------------- recording ---------------- */
+const recorder = { on: false, node: null, sink: null, chunks: [], frames: 0, startedAt: 0, ui: null };
+
+function startRec() {
+  if (recorder.on) { logMsg('already recording — "rec stop" to save it'); return; }
+  ensureCtx();
+  recorder.chunks = [];
+  recorder.frames = 0;
+  recorder.node = ctx.createScriptProcessor(4096, 2, 2);
+  recorder.node.onaudioprocess = e => {
+    const L = e.inputBuffer.getChannelData(0);
+    const R = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : L;
+    recorder.chunks.push([new Float32Array(L), new Float32Array(R)]);
+    recorder.frames += L.length;
+  };
+  recorder.sink = ctx.createGain();
+  recorder.sink.gain.value = 0; // keep the processor pulling without doubling the audio
+  mix.connect(recorder.node);
+  recorder.node.connect(recorder.sink);
+  recorder.sink.connect(ctx.destination);
+  recorder.on = true;
+  recorder.startedAt = ctx.currentTime;
+  recBadge.classList.add('on');
+  recorder.ui = setInterval(() => {
+    const s = Math.floor(ctx.currentTime - recorder.startedAt);
+    recTime.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    if (s >= 600) stopRec(); // 10 min cap so the file stays sane
+  }, 250);
+  logMsg('recording — play something, then "rec stop" to save a .wav');
+}
+
+function stopRec() {
+  if (!recorder.on) { logMsg('not recording — type "rec" to start'); return; }
+  recorder.on = false;
+  clearInterval(recorder.ui);
+  try { mix.disconnect(recorder.node); } catch (e) {}
+  recorder.node.disconnect();
+  recorder.sink.disconnect();
+  recorder.node.onaudioprocess = null;
+  recBadge.classList.remove('on');
+
+  if (!recorder.frames) { logMsg('nothing captured'); return; }
+  const wav = encodeWav(recorder.chunks, recorder.frames, ctx.sampleRate);
+  const secs = (recorder.frames / ctx.sampleRate).toFixed(1);
+  recorder.chunks = [];
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+  downloadBlob(new Blob([wav], { type: 'audio/wav' }), `chord-console-${stamp}.wav`);
+  logMsg(`saved chord-console-${stamp}.wav (${secs}s)`);
+}
+
+function encodeWav(chunks, frames, rate) {
+  const bytes = 44 + frames * 4; // 16-bit stereo
+  const buf = new ArrayBuffer(bytes);
+  const view = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); view.setUint32(4, bytes - 8, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 2, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 4, true);
+  view.setUint16(32, 4, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, frames * 4, true);
+  let off = 44;
+  for (const [L, R] of chunks) {
+    for (let i = 0; i < L.length; i++) {
+      view.setInt16(off, Math.max(-1, Math.min(1, L[i])) * 32767, true); off += 2;
+      view.setInt16(off, Math.max(-1, Math.min(1, R[i])) * 32767, true); off += 2;
+    }
+  }
+  return buf;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/* ---------------- piano rendering ---------------- */
+const PIANO_LOW = 36, PIANO_HIGH = 84; // C2..C6
+const svg = document.getElementById('piano');
+const keyEls = {};
+
+(function buildPiano() {
+  const isBlack = m => [1,3,6,8,10].includes(m % 12);
+  const whites = [];
+  for (let m = PIANO_LOW; m <= PIANO_HIGH; m++) if (!isBlack(m)) whites.push(m);
+  const W = 16, H = 64, BW = 10, BH = 40;
+  svg.setAttribute('viewBox', `0 0 ${whites.length * W} ${H}`);
+
+  let x = 0;
+  const whiteX = {};
+  for (const m of whites) {
+    const r = document.createElementNS(svg.namespaceURI, 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', 0);
+    r.setAttribute('width', W); r.setAttribute('height', H);
+    r.setAttribute('class', 'key-w');
+    svg.appendChild(r);
+    keyEls[m] = r;
+    whiteX[m] = x;
+    x += W;
+  }
+  for (let m = PIANO_LOW; m <= PIANO_HIGH; m++) {
+    if (!isBlack(m)) continue;
+    const leftWhite = m - 1;
+    const r = document.createElementNS(svg.namespaceURI, 'rect');
+    r.setAttribute('x', whiteX[leftWhite] + W - BW / 2);
+    r.setAttribute('y', 0);
+    r.setAttribute('width', BW); r.setAttribute('height', BH);
+    r.setAttribute('class', 'key-b');
+    svg.appendChild(r);
+    keyEls[m] = r;
+  }
+})();
+
+function highlightKeys(midis) {
+  for (const el of Object.values(keyEls)) el.classList.remove('on');
+  for (const m of midis) if (keyEls[m]) keyEls[m].classList.add('on');
+}
+
+/* ---------------- UI ---------------- */
+const nowChordEl = document.getElementById('nowChord');
+const nowNotesEl = document.getElementById('nowNotes');
+const logEl = document.getElementById('log');
+const cmd = document.getElementById('cmd');
+const ghost = document.getElementById('ghost');
+const suggEl = document.getElementById('sugg');
+
+function renderNow(chord, midis) {
+  if (!chord) {
+    nowChordEl.textContent = 'chord console';
+    nowChordEl.classList.add('idle');
+    nowNotesEl.textContent = '';
+    highlightKeys([]);
+    return;
+  }
+  nowChordEl.classList.remove('idle');
+  nowChordEl.textContent = chord.name;
+  nowNotesEl.textContent = noteNames(chord).join('  ');
+  highlightKeys(midis);
+}
+
+function logMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'hint';
+  div.textContent = text;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function logEntry(chord, rawText) {
+  const div = document.createElement('div');
+  div.className = 'entry' + (chord ? '' : ' err');
+  const name = chord ? chord.name : rawText;
+  const notes = chord ? noteNames(chord).join(' ') : '?';
+  div.innerHTML = `<span class="prompt-char">&gt;</span><span class="name"></span><span class="notes"></span>`;
+  div.querySelector('.name').textContent = name;
+  div.querySelector('.notes').textContent = notes;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ----- key / bpm / octave ----- */
+const chipsEl = document.getElementById('chips');
+const stKey = document.getElementById('stKey');
+const stBpm = document.getElementById('stBpm');
+const stOct = document.getElementById('stOct');
+const beatsEl = document.getElementById('beats');
+const progEl = document.getElementById('prog');
+const sectionsEl = document.getElementById('sections');
+const fillPill = document.getElementById('fillPill');
+const recBadge = document.getElementById('recBadge');
+const recTime = document.getElementById('recTime');
+
+// keys conventionally spelled with flats
+const FLAT_MAJOR_PCS = [5,10,3,8,1,6];
+const FLAT_MINOR_PCS = [2,7,0,5,10,3];
+
+function setKey(arg, arg2) {
+  if (!arg || arg === 'off' || arg === 'none') {
+    state.key = null;
+    renderChips(); renderStatus();
+    logMsg('key cleared');
+    return;
+  }
+  const r = parseRoot(arg);
+  const rest = arg.slice(r ? r.len : 0);
+  let minor = ['m','min','minor','-'].includes(rest) || ['minor','min','m'].includes(arg2);
+  if (!r || (rest && !minor && !['maj','major'].includes(rest))) {
+    logMsg(`can't parse key "${arg}" — try: key g, key am, key bb, key f#m`);
+    return;
+  }
+  const flat = !arg.includes('#') &&
+    (arg.includes('b') || (minor ? FLAT_MINOR_PCS : FLAT_MAJOR_PCS).includes(r.pc));
+  state.key = { pc: r.pc, minor, flat };
+  renderChips(); renderStatus();
+  logMsg(`key set — click a chord or type it`);
+}
+
+function keyNoteName(pc) {
+  return (state.key.flat ? PC_NAMES_FLAT : PC_NAMES_SHARP)[pc % 12];
+}
+
+function renderChips() {
+  chipsEl.innerHTML = '';
+  if (!state.key) { chipsEl.classList.remove('open'); return; }
+  const scale  = state.key.minor ? MIN_SCALE  : MAJ_SCALE;
+  const triads = state.key.minor ? MIN_TRIADS : MAJ_TRIADS;
+  const romans = state.key.minor ? MIN_ROMANS : MAJ_ROMANS;
+  scale.forEach((off, i) => {
+    const name = keyNoteName(state.key.pc + off) + triads[i];
+    const btn = document.createElement('button');
+    btn.innerHTML = `<span></span><small></small>`;
+    btn.querySelector('span').textContent = name;
+    btn.querySelector('small').textContent = romans[i];
+    btn.addEventListener('mousedown', e => {
+      e.preventDefault();
+      submit(name.toLowerCase());
+    });
+    chipsEl.appendChild(btn);
+  });
+  chipsEl.classList.add('open');
+}
+
+function setOctave(arg) {
+  let v;
+  if (arg === 'up' || arg === '++') v = state.octave + 1;
+  else if (arg === 'down' || arg === '--') v = state.octave - 1;
+  else if (/^[+-]?\d+$/.test(arg || '')) v = parseInt(arg, 10);
+  else if (arg === '0' || arg === 'reset' || arg === undefined) v = 0;
+  else { logMsg(`oct takes a number: oct -1, oct 0, oct up, oct down`); return; }
+  state.octave = Math.max(-2, Math.min(2, v));
+  renderStatus();
+  if (current) playChord(current.chord); // re-voice the held chord live
+}
+
+function renderStatus() {
+  stKey.textContent = state.key
+    ? keyNoteName(state.key.pc) + (state.key.minor ? 'm' : '')
+    : '—';
+  stBpm.textContent = state.bpm > 0 ? state.bpm : '—';
+  stOct.textContent = (state.octave > 0 ? '+' : '') + state.octave;
+  document.getElementById('stStyle').textContent = state.style;
+  document.getElementById('stLoop').textContent = !state.loop ? 'off'
+    : state.progBeats.length ? `${state.prog.length} learned`
+    : `${state.prog.length}×${state.loopBars}bar`;
+  document.getElementById('stKeep').textContent = state.capture ? 'on' : 'off';
+}
+
+// add a chord to the progression
+function pushProg(chordStr) {
+  state.prog.push(chordStr);
+  if (state.prog.length > 16) state.prog.shift();
+  if (!state.loop) state.loopPos = 0;
+  renderProg(state.prog.length - 1);
+  renderStatus();
+}
+
+// the progression you've built, clickable; active = the chord currently sounding
+function renderProg(activeIdx) {
+  if (!state.prog.length) { progEl.classList.remove('open'); progEl.innerHTML = ''; return; }
+  const sig = state.prog.join(',') + '|' + state.progBeats.join(',');
+  if (progEl.dataset.sig !== sig) {
+    progEl.innerHTML = '';
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = learn.on ? 'LEARNING' : 'PROG';
+    progEl.appendChild(label);
+    state.prog.forEach((c, i) => {
+      const btn = document.createElement('button');
+      const chord = parseChord(c);
+      btn.textContent = chord ? chord.name : c;
+      if (state.progBeats[i]) {
+        const b = document.createElement('small');
+        b.textContent = ` ${state.progBeats[i]}`;
+        b.style.color = 'var(--dim)';
+        btn.appendChild(b);
+      }
+      btn.dataset.idx = i;
+      btn.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const ch = parseChord(c);
+        if (ch) { playChord(ch); renderProg(i); lastChordStr = c; }
+        state.loopPos = (i + 1) % state.prog.length;
+      });
+      progEl.appendChild(btn);
+    });
+    progEl.dataset.sig = sig;
+  }
+  progEl.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.idx) === activeIdx);
+  });
+  progEl.classList.add('open');
+}
+
+// verse / chorus / bridge — click one or type its name
+function renderSections() {
+  const names = Object.keys(state.sections);
+  if (!names.length) { sectionsEl.classList.remove('open'); sectionsEl.innerHTML = ''; return; }
+  sectionsEl.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'label';
+  label.textContent = 'PARTS';
+  sectionsEl.appendChild(label);
+  for (const name of names) {
+    const btn = document.createElement('button');
+    btn.textContent = name;
+    if (name === state.section) btn.classList.add('active');
+    if (name === state.pending) btn.classList.add('queued');
+    btn.addEventListener('mousedown', e => { e.preventDefault(); playSection(name); });
+    sectionsEl.appendChild(btn);
+  }
+  sectionsEl.classList.add('open');
+}
+
+function flashBeat(beat, delayMs) {
+  setTimeout(() => {
+    [...beatsEl.children].forEach((dot, i) => dot.classList.toggle('on', i === beat));
+  }, Math.max(0, delayMs));
+}
+
+// `force` is for a one-shot "fill"; otherwise a cue that lands after you stop is dropped
+function armFill(on, delayMs, force) {
+  setTimeout(() => {
+    fillPill.classList.toggle('on', on && (force || (state.loop && state.fill)));
+  }, Math.max(0, delayMs));
+}
+
+/* ----- suggestions ----- */
+let suggestions = [];
+let selIdx = 0;
+
+function computeSuggestions(raw) {
+  const s = raw.toLowerCase().trim();
+  if (!s || s.includes('/')) return []; // no autocomplete on slash chords, keep it simple
+  const r = parseRoot(s);
+  if (!r) return [];
+  const rootRaw = s.slice(0, r.len);
+  const suffix = s.slice(r.len);
+  const out = [];
+  for (const [q] of QUALITIES) {
+    if (q.startsWith(suffix)) {
+      out.push(rootRaw + q);
+    }
+  }
+  // rank: exact match, then chords diatonic to the current key, then by length
+  const dq = diatonicQuals(r.pc);
+  const rank = x => {
+    if (x === s) return -1;
+    const q = x.slice(r.len);
+    if (dq && q === dq[0]) return 0;
+    if (dq && q === dq[1]) return 1;
+    return 2;
+  };
+  out.sort((a, b) => rank(a) - rank(b) || a.length - b.length);
+  return out.slice(0, 7);
+}
+
+function renderSuggestions() {
+  if (!suggestions.length) {
+    suggEl.classList.remove('open');
+    ghost.innerHTML = '';
+    return;
+  }
+  suggEl.classList.add('open');
+  suggEl.innerHTML = '';
+  suggestions.forEach((s, i) => {
+    const chord = parseChord(s);
+    const item = document.createElement('div');
+    item.className = 'item' + (i === selIdx ? ' sel' : '');
+    item.innerHTML = `<span class="name"></span><span class="notes"></span>`;
+    item.querySelector('.name').textContent = chord.name;
+    item.querySelector('.notes').textContent = noteNames(chord).join(' ');
+    item.addEventListener('mousedown', e => {
+      e.preventDefault();
+      submit(s);
+    });
+    suggEl.appendChild(item);
+  });
+  // ghost completion for selected suggestion
+  const typed = cmd.value.toLowerCase().trim();
+  const sel = suggestions[selIdx];
+  if (sel && sel.startsWith(typed) && sel !== typed) {
+    ghost.innerHTML = `<span class="typed"></span><span class="rest"></span>`;
+    ghost.querySelector('.typed').textContent = cmd.value;
+    ghost.querySelector('.rest').textContent = sel.slice(typed.length);
+  } else {
+    ghost.innerHTML = '';
+  }
+}
+
+/* ----- input handling ----- */
+const history = [];
+let histIdx = -1;
+let lastChordStr = null; // what "p" on its own will keep
+
+// pull a name out of a command, tolerating quotes: loop learn "my verse" -> my-verse
+function nameArg(raw, parts, idx) {
+  const quoted = raw.match(/["']([^"']+)["']/);
+  if (quoted) return quoted[1].trim().toLowerCase().replace(/\s+/g, '-');
+  return parts[idx];
+}
+
+const HELP = [
+  'chords    cmaj7 · am9 · f#m7 · bbmaj7 · c/e — enter plays and holds it',
+  'key       key g · key am — clickable chords of that key, smarter autocomplete',
+  'bpm       bpm 92 · bpm off · click off — tempo and metronome',
+  'oct       oct -1 · alt+↑↓ — move the whole voicing by octaves',
+  'feel      roll · arp · noodle · pad · pluck 1 3 5 3 — or tap 1-8 by hand',
+  'parts     loop start verse · play it through · loop end — then type verse to play it',
+  '          switching waits for the next chord change · sections · loop delete verse',
+  '          set bpm first and it uses your tempo; otherwise it works one out',
+  'keep      cmaj7 p — play it AND keep it · p keeps what is playing · p on/off',
+  'prog      prog c am f g sets one outright · clear empties it',
+  'loop      loop · loop 2 (bars per chord) · loop off — plays the progression',
+  'fill      fill drops a drum fill now · fill big · fill on for automatic ones',
+  'rec       rec · rec stop — records what you play and downloads a .wav',
+  '',
+  'nothing is stored — reloading the page clears everything',
+];
+function showHelp() { for (const line of HELP) logMsg(line); }
+
+function submit(raw) {
+  const s = raw.toLowerCase().trim();
+  if (!s) return;
+
+  // commands
+  const parts = s.split(/\s+/);
+  const clearInput = () => {
+    cmd.value = '';
+    suggestions = []; selIdx = 0;
+    renderSuggestions();
+  };
+  if (s === 'stop' || s === 'x') {
+    stopAll();
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'key') {
+    setKey(parts[1], parts[2]);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'bpm') {
+    const n = parseInt(parts[1], 10);
+    if (parts[1] === 'off' || n === 0) { setBpm(0); logMsg('metronome off'); }
+    else if (n >= 20 && n <= 300) { setBpm(n); logMsg(`bpm ${n} — metronome on (bpm off to stop)`); }
+    else logMsg('bpm takes 20–300, or "bpm off"');
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'style' || STYLES.includes(s)) {
+    setStyle(parts[0] === 'style' ? parts[1] : s);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'oct' || parts[0] === 'octave') {
+    setOctave(parts[1]);
+    logMsg(`octave ${state.octave > 0 ? '+' : ''}${state.octave}`);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'pluck') {
+    setPluck(parts.slice(1));
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'loop' || parts[0] === 'learn') {
+    const START = ['start', 'rec', 'new', 'learn'];
+    const END = ['end', 'done', 'save', 'finish'];
+    const DEL = ['delete', 'del', 'remove', 'drop'];
+    let sub = parts[1];
+    let name = nameArg(raw, parts, 2);
+
+    // "learn verse" names it straight off — anything that isn't a keyword is the name
+    if (parts[0] === 'learn' && sub &&
+        ![...START, ...END, ...DEL, 'cancel', 'off'].includes(sub)) {
+      name = nameArg(raw, parts, 1);
+      sub = 'start';
+    }
+    if (parts[0] === 'learn' && !sub) sub = 'start';
+
+    if (START.includes(sub)) startLearn(name);
+    else if (END.includes(sub)) finishLearn();
+    else if (DEL.includes(sub)) deleteSection(name);
+    else if (sub === 'cancel') cancelLearn();
+    else setLoop(sub);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if ((s === 'done' || s === 'end') && learn.on) {
+    finishLearn();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (s === 'sections' || s === 'parts') {
+    const names = Object.keys(state.sections);
+    logMsg(names.length ? `parts: ${names.join(' · ')} — type one to play it` : 'no parts yet — record one: loop start verse');
+    clearInput();
+    return;
+  }
+  // a part's name plays it, like a chord
+  if (state.sections[s]) {
+    playSection(s);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'rec' || parts[0] === 'record') {
+    if (parts[1] === 'stop' || parts[1] === 'off' || parts[1] === 'save') stopRec();
+    else startRec();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'prog') {
+    const chords = parts.slice(1).filter(c => parseChord(c));
+    if (!chords.length) { logMsg('give it chords: prog cmaj7 am7 fmaj7 g7'); clearInput(); return; }
+    state.prog = chords;
+    state.progBeats = [];
+    state.loopPos = 0;
+    state.loopNextBeat = 0;
+    renderProg(-1); renderStatus();
+    logMsg(`progression set — ${chords.join(' ')} (type loop to play it)`);
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (s === 'clear') {
+    state.prog = [];
+    state.progBeats = [];
+    state.loop = false;
+    state.section = null;
+    state.pending = null;
+    renderProg(-1); renderSections(); renderStatus();
+    if (!transportNeeded()) stopTransport();
+    logMsg('progression cleared');
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'fill') {
+    if (parts[1] === 'off' || parts[1] === 'on') {
+      state.fill = parts[1] === 'on';
+      logMsg(state.fill
+        ? 'auto fill on — plays into every chord change while looping'
+        : 'auto fill off — type "fill" to drop one in by hand');
+    } else {
+      // no argument: play one right now, wherever you are
+      ensureCtx();
+      const big = parts[1] === 'big' || parts[1] === 'long';
+      drumFill(ctx.currentTime + 0.06, big);
+      armFill(true, 0, true);
+      armFill(false, beatLen() * (big ? 2000 : 1000));
+      logMsg(big ? 'fill (big)' : 'fill — try "fill big", or loop for automatic ones');
+    }
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'click') {
+    state.click = parts[1] !== 'off';
+    if (state.click && !state.bpm) { state.bpm = 100; logMsg('no tempo set — using bpm 100'); }
+    startTransport(false);
+    if (!transportNeeded()) stopTransport();
+    renderStatus();
+    logMsg(`click ${state.click ? 'on' : 'off'}`);
+    clearInput();
+    return;
+  }
+  if (s === 'help' || s === '?') {
+    showHelp();
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'p') {
+    if (parts[1] === 'on' || parts[1] === 'off') {
+      state.capture = parts[1] === 'on';
+      renderStatus();
+      logMsg(state.capture
+        ? 'keep on — every chord you play goes into the progression'
+        : 'keep off — chords just play; add "p" after one to keep it');
+    } else if (lastChordStr) {
+      pushProg(lastChordStr);
+      logMsg(`kept ${parseChord(lastChordStr).name} — ${state.prog.length} in the progression`);
+    } else {
+      logMsg('play a chord first, then p keeps it (or type: cmaj7 p)');
+    }
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+
+  // "cmaj7 p" — play it and keep it, whatever the keep mode is
+  let keep = state.capture;
+  let chordStr = s;
+  if (parts.length === 2 && (parts[1] === 'p' || parts[1] === 'keep')) {
+    chordStr = parts[0];
+    keep = true;
+  }
+
+  let chord = parseChord(chordStr);
+  if (!chord && suggestions.length) { chord = parseChord(suggestions[selIdx]); chordStr = suggestions[selIdx]; }
+  if (chord) {
+    playChord(chord);
+    logEntry(chord);
+    lastChordStr = chordStr;
+    if (learn.on) markLearn(chordStr); // learning: the chord AND how long you hold it
+    else if (keep) pushProg(chordStr);
+    history.push(s);
+    histIdx = history.length;
+  } else {
+    logEntry(null, s);
+  }
+  cmd.value = '';
+  suggestions = []; selIdx = 0;
+  renderSuggestions();
+}
+
+cmd.addEventListener('input', () => {
+  suggestions = computeSuggestions(cmd.value);
+  selIdx = 0;
+  renderSuggestions();
+});
+
+cmd.addEventListener('keydown', e => {
+  if (e.altKey) return; // alt+arrows = octave shift, handled globally
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submit(cmd.value);
+  } else if (e.key === 'Tab' || (e.key === 'ArrowRight' && cmd.selectionStart === cmd.value.length)) {
+    if (suggestions.length) {
+      e.preventDefault();
+      cmd.value = suggestions[selIdx];
+      suggestions = computeSuggestions(cmd.value);
+      selIdx = 0;
+      renderSuggestions();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+    }
+  } else if (e.key === 'ArrowDown') {
+    if (suggestions.length) {
+      e.preventDefault();
+      selIdx = (selIdx + 1) % suggestions.length;
+      renderSuggestions();
+    }
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (suggestions.length && cmd.value) {
+      selIdx = (selIdx - 1 + suggestions.length) % suggestions.length;
+      renderSuggestions();
+    } else if (history.length) {
+      histIdx = Math.max(0, histIdx - 1);
+      cmd.value = history[histIdx] ?? '';
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    if (suggestions.length) {
+      suggestions = []; renderSuggestions();
+    } else {
+      stopAll();
+    }
+  }
+});
+
+// keep focus on the console + global octave shortcut + digit plucking
+document.addEventListener('keydown', e => {
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault();
+    setOctave(e.key === 'ArrowUp' ? 'up' : 'down');
+    return;
+  }
+  // with an empty prompt and a chord holding, 1-8 pluck its tones by hand
+  if (/^[1-8]$/.test(e.key) && current && cmd.value === '' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    pluckIndex(parseInt(e.key, 10) - 1);
+    return;
+  }
+  if (document.activeElement !== cmd && !e.metaKey && !e.ctrlKey && e.key.length === 1) {
+    cmd.focus();
+  }
+});
+</script>
+</body>
+</html>
