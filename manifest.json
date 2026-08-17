@@ -1,0 +1,9 @@
+{
+  "name": "chord pad",
+  "short_name": "chords",
+  "start_url": "mobile.html",
+  "display": "standalone",
+  "background_color": "#0b0e12",
+  "theme_color": "#0b0e12",
+  "orientation": "portrait"
+}

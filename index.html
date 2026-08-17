@@ -201,6 +201,45 @@
     border-style: dashed;
   }
 
+  /* lyric sheet */
+  .sheet {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .sheet.open { display: block; }
+  .sheet .head {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 1px;
+    padding: 2px 6px 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .sheet .row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .sheet .row:hover { background: #161c26; }
+  .sheet .row.here { background: #16241d; }
+  .sheet .row.playing .n { color: var(--accent); }
+  .sheet .n { color: var(--dim); width: 1.8em; text-align: right; flex: none; }
+  .sheet .ch { color: var(--amber); flex: none; min-width: 8.5em; }
+  .sheet .tx { flex: 1; word-break: break-word; }
+  .sheet .tx.empty { color: var(--dim); opacity: .6; }
+  .sheet .sy { color: var(--dim); font-size: 11px; flex: none; min-width: 4.5em; text-align: right; }
+  .sheet .sy.tight { color: #e0864c; }
+  .sheet .sy.roomy { color: #5c8fb8; }
+
   /* status bar */
   .status {
     display: flex;
@@ -266,6 +305,8 @@
   <div class="chips" id="chips"></div>
   <div class="prog" id="sections"></div>
   <div class="prog" id="prog"></div>
+
+  <div class="sheet" id="sheet"></div>
 
   <div class="log" id="log">
     <div class="hint">type a chord and hit enter — it holds until the next one.</div>
@@ -354,6 +395,7 @@ const state = {
   pending: null,   // one queued to take over at the next chord change
   click: false,    // metronome audible
   fill: false,     // audible drum fill before each chord change ("fill on")
+  lyrics: {},      // part name -> a line of words per bar
 };
 const STYLES = ['pad', 'roll', 'arp', 'noodle', 'pluck'];
 const STYLE_BED = { pad: 1.0, roll: 1.0, arp: 0.3, noodle: 0.45, pluck: 0.35 }; // pad level per style
@@ -801,6 +843,7 @@ function transportTick() {
           setTimeout(() => { renderSections(); renderStatus(); }, Math.max(0, delayMs));
         }
         const idx = state.loopPos % state.prog.length;
+        if (idx === 0) cycleBeat = 0; // back to the top of the part
         scheduleLoopChord(state.prog[idx], t, idx, delayMs);
         state.loopPos = (idx + 1) % state.prog.length;
         state.loopNextBeat = beat + beatsForChord(idx);
@@ -812,6 +855,12 @@ function transportTick() {
         armFill(true, delayMs);
       }
     }
+
+    if (state.loop && sheetEl.classList.contains('open')) {
+      const bar = Math.floor(cycleBeat / 4);
+      setTimeout(() => renderSheet(bar), Math.max(0, delayMs));
+    }
+    if (state.loop) cycleBeat++;
 
     transport.beat++;
     transport.next += 60 / state.bpm;
@@ -1127,6 +1176,190 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+/* ---------------- writing words to the music ---------------- */
+let writing = false;   // typing goes to the lyric sheet instead of the chord prompt
+let writeSlot = 0;     // which bar you're writing into
+let cycleBeat = 0;     // beats since the loop came back around — drives the playing marker
+
+// lay the progression out as bars, so each line of words has a real length to fill
+function buildBars() {
+  const bars = [];
+  let beat = 0;
+  state.prog.forEach((chordStr, i) => {
+    const len = beatsForChord(i);
+    for (let k = 0; k < len; k++) {
+      const b = Math.floor((beat + k) / 4);
+      if (!bars[b]) bars[b] = { chords: [], beats: 0 };
+      if (!bars[b].chords.includes(chordStr)) bars[b].chords.push(chordStr);
+      bars[b].beats++;
+    }
+    beat += len;
+  });
+  return bars;
+}
+
+const lyricKey = () => state.section || '_';
+function lyricLines() {
+  const k = lyricKey();
+  if (!state.lyrics[k]) state.lyrics[k] = [];
+  return state.lyrics[k];
+}
+
+// English syllable counting is a heuristic — close enough to feel the shape of a line
+function syllables(word) {
+  let w = word.toLowerCase().replace(/[^a-z']/g, '');
+  if (!w) return 0;
+  if (w.length <= 3) return 1;
+  w = w.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, '');
+  w = w.replace(/^y/, '');
+  const groups = w.match(/[aeiouy]{1,2}/g);
+  return groups ? groups.length : 1;
+}
+const lineSyllables = line =>
+  line.split(/\s+/).filter(Boolean).reduce((n, w) => n + syllables(w), 0);
+
+function startWriting() {
+  if (!state.prog.length) {
+    logMsg('nothing to write to yet — play a part first (loop start verse … loop end), or: prog c am f g');
+    return;
+  }
+  writing = true;
+  writeSlot = 0;
+  cmd.placeholder = 'your line…';
+  renderSheet();
+  const bars = buildBars();
+  logMsg(`writing to ${state.section ? `"${state.section}"` : 'the progression'} — ${bars.length} bars`);
+  logMsg('type a line and hit enter to fill each bar · back · next · del · sheet · done');
+  logMsg('/ runs a console command without leaving — /loop to hear it while you write');
+}
+
+function stopWriting(quiet) {
+  writing = false;
+  cmd.placeholder = 'cmaj7';
+  sheetEl.classList.remove('open');
+  if (!quiet) logMsg('done writing — type "sheet" any time to see it, "write" to carry on');
+}
+
+function setLine(text) {
+  const lines = lyricLines();
+  const bars = buildBars();
+  lines[writeSlot] = text;
+  const syl = lineSyllables(text);
+  const beats = bars[writeSlot] ? bars[writeSlot].beats : 4;
+  const per = syl / beats;
+  const count = `${syl} syllable${syl === 1 ? '' : 's'} over ${beats} beats`;
+  if (per > 2.4) logMsg(`bar ${writeSlot + 1}: ${count} — that's a mouthful, you'll be rushing it`);
+  else if (syl && per < 0.75) logMsg(`bar ${writeSlot + 1}: ${count} — lots of space left`);
+  writeSlot = Math.min(writeSlot + 1, Math.max(bars.length - 1, 0));
+  renderSheet();
+}
+
+function renderSheet(playingBar) {
+  if (!writing && !sheetEl.classList.contains('open')) return;
+  const bars = buildBars();
+  if (!bars.length) { sheetEl.classList.remove('open'); return; }
+  const lines = lyricLines();
+  sheetEl.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'head';
+  head.innerHTML = '<span></span><span></span>';
+  head.children[0].textContent = state.section ? state.section.toUpperCase() : 'PROGRESSION';
+  head.children[1].textContent = `${bars.length} bars · ${lines.filter(Boolean).length} written`;
+  sheetEl.appendChild(head);
+
+  bars.forEach((bar, i) => {
+    const row = document.createElement('div');
+    row.className = 'row' + (writing && i === writeSlot ? ' here' : '') + (i === playingBar ? ' playing' : '');
+    row.innerHTML = '<span class="n"></span><span class="ch"></span><span class="tx"></span><span class="sy"></span>';
+    row.querySelector('.n').textContent = i + 1;
+    row.querySelector('.ch').textContent = bar.chords.map(c => (parseChord(c) || {}).name || c).join(' ');
+
+    const text = lines[i] || '';
+    const tx = row.querySelector('.tx');
+    tx.textContent = text || (writing && i === writeSlot ? 'type your line…' : '·');
+    if (!text) tx.classList.add('empty');
+
+    const sy = row.querySelector('.sy');
+    if (text) {
+      const n = lineSyllables(text);
+      const per = n / bar.beats;
+      sy.textContent = `${n} syl`;
+      if (per > 2.4) sy.classList.add('tight');
+      else if (per < 0.75) sy.classList.add('roomy');
+    }
+    row.addEventListener('mousedown', e => {
+      e.preventDefault();
+      writeSlot = i;
+      if (!writing) startWriting();
+      else renderSheet();
+    });
+    sheetEl.appendChild(row);
+  });
+  sheetEl.classList.add('open');
+}
+
+// print it as a plain chord sheet you can select and copy out
+function printSheet() {
+  const bars = buildBars();
+  if (!bars.length) { logMsg('no progression to print yet'); return; }
+  const lines = lyricLines();
+  logMsg(state.section ? `— ${state.section} —` : '— progression —');
+  bars.forEach((bar, i) => {
+    const chords = bar.chords.map(c => (parseChord(c) || {}).name || c).join(' ');
+    logMsg(`${String(i + 1).padStart(2)}  ${chords.padEnd(12)} ${lines[i] || ''}`);
+  });
+}
+
+/* ---------------- rhymes ---------------- */
+// spelling-based, so it is approximate — good for a nudge, not a dictionary
+const RHYME_WORDS = ('time mine line sign shine find kind mind behind night light right bright sight fight tight white write ' +
+  'day way say stay play away today grey pain rain train plane name game same came flame blame ' +
+  'heart start apart part dark spark heard word bird world hurt work turn burn learn return ' +
+  'love above enough tough rough touch much such dove blood flood mud good would could should ' +
+  'home alone stone bone known thrown road load cold told gold hold old sold soul whole roll ' +
+  'eyes lies skies rise wise size prize surprise cry try fly high sky why lie die bye goodbye ' +
+  'me free be see sea tree three key easy leave believe reason season dream seem team mean seen ' +
+  'you true blue through new knew view few soon moon room tune June room bloom ' +
+  'down town around sound found ground brown crown now how out about doubt shout ' +
+  'fire desire higher liar hour our power flower tower hold gone long song wrong strong along ' +
+  'more before door floor sure pure young sun run done none one gun fun ' +
+  'wait late great gate straight break awake mistake take make ache fade made stayed afraid ' +
+  'fall call small wall all tall keep sleep deep weep street beat heat sweet feet meet repeat ' +
+  'hand stand land understand end friend send spend again rain remain explain change strange ' +
+  'life knife wife night alive drive survive five side ride hide inside beside wide ' +
+  'head said bed red dead instead ahead heavy ready steady empty plenty ' +
+  'gold hold told cold rolled soul control alone phone thrown grown shown ' +
+  'wonder under thunder number summer over lover another mother brother other ' +
+  'story glory sorry worry hurry alright tonight delight invite ' +
+  'hard heart guard scarred star far car are heart apart').split(/\s+/);
+
+function rhymeKey(w) {
+  let x = w.toLowerCase().replace(/[^a-z]/g, '');
+  if (!x) return '';
+  x = x.replace(/ck/g, 'k').replace(/ph/g, 'f');
+  x = x.replace(/igh/g, 'i').replace(/ough$/, 'uf');
+  x = x.replace(/([aeiou])\1/g, '$1');                 // ee -> e, oo -> o
+  x = x.replace(/ea|ie|ey|ai|ay|ei/g, m => m[0] === 'a' ? 'a' : 'e');
+  x = x.replace(/(?:ue|ew)$/, 'u').replace(/ou/g, 'ow');
+  x = x.replace(/y$/, 'e');
+  x = x.replace(/([^aeiou])e$/, '$1');                 // silent e
+  x = x.replace(/([bcdfghjklmnpqrstvwxz])\1/g, '$1');  // doubled consonants
+  const m = x.match(/[aeiou][a-z]*$/);
+  return m ? m[0] : x;
+}
+
+function rhymesFor(word) {
+  const key = rhymeKey(word);
+  if (!key) return [];
+  const seen = new Set([word.toLowerCase()]);
+  return RHYME_WORDS.filter(w => {
+    if (seen.has(w) || rhymeKey(w) !== key) return false;
+    seen.add(w);
+    return true;
+  });
+}
+
 /* ---------------- piano rendering ---------------- */
 const PIANO_LOW = 36, PIANO_HIGH = 84; // C2..C6
 const svg = document.getElementById('piano');
@@ -1219,6 +1452,7 @@ const stOct = document.getElementById('stOct');
 const beatsEl = document.getElementById('beats');
 const progEl = document.getElementById('prog');
 const sectionsEl = document.getElementById('sections');
+const sheetEl = document.getElementById('sheet');
 const fillPill = document.getElementById('fillPill');
 const recBadge = document.getElementById('recBadge');
 const recTime = document.getElementById('recTime');
@@ -1382,6 +1616,7 @@ let suggestions = [];
 let selIdx = 0;
 
 function computeSuggestions(raw) {
+  if (writing) return []; // you're typing words, not chords
   const s = raw.toLowerCase().trim();
   if (!s || s.includes('/')) return []; // no autocomplete on slash chords, keep it simple
   const r = parseRoot(s);
@@ -1465,6 +1700,9 @@ const HELP = [
   'prog      prog c am f g sets one outright · clear empties it',
   'loop      loop · loop 2 (bars per chord) · loop off — plays the progression',
   'fill      fill drops a drum fill now · fill big · fill on for automatic ones',
+  'write     write — put words in each bar, with syllable counts against the beats',
+  '          in there: back · next · del · sheet · /cmd runs a command · done',
+  'rhyme     rhyme moon — approximate, spelling-based, just for a nudge',
   'rec       rec · rec stop — records what you play and downloads a .wav',
   '',
   'nothing is stored — reloading the page clears everything',
@@ -1472,16 +1710,47 @@ const HELP = [
 function showHelp() { for (const line of HELP) logMsg(line); }
 
 function submit(raw) {
-  const s = raw.toLowerCase().trim();
+  let s = raw.toLowerCase().trim();
   if (!s) return;
 
-  // commands
-  const parts = s.split(/\s+/);
   const clearInput = () => {
     cmd.value = '';
     suggestions = []; selIdx = 0;
     renderSuggestions();
   };
+
+  // while writing, what you type is a lyric — "/" runs a command without leaving
+  if (writing) {
+    if (s === 'done' || s === 'exit' || s === 'stop writing') { stopWriting(); clearInput(); return; }
+    if (s === 'back' || s === 'up') {
+      writeSlot = Math.max(0, writeSlot - 1);
+      renderSheet(); clearInput(); return;
+    }
+    if (s === 'next') {
+      writeSlot = Math.min(buildBars().length - 1, writeSlot + 1);
+      renderSheet(); clearInput(); return;
+    }
+    if (s === 'del' || s === 'delete') {
+      lyricLines()[writeSlot] = '';
+      renderSheet(); clearInput(); return;
+    }
+    if (s === 'sheet') { printSheet(); clearInput(); return; }
+    if (raw.trim().startsWith('/')) {
+      s = raw.trim().slice(1).toLowerCase();
+      raw = raw.trim().slice(1);
+      if (!s) { clearInput(); return; }
+    } else {
+      setLine(raw.trim());
+      const last = raw.trim().split(/\s+/).pop() || '';
+      const r = rhymesFor(last);
+      if (r.length) logMsg(`rhymes with "${last}": ${r.slice(0, 10).join(' · ')}`);
+      clearInput();
+      return;
+    }
+  }
+
+  // commands
+  const parts = s.split(/\s+/);
   if (s === 'stop' || s === 'x') {
     stopAll();
     clearInput();
@@ -1625,6 +1894,30 @@ function submit(raw) {
     clearInput();
     return;
   }
+  if (s === 'write' || s === 'lyrics' || s === 'words') {
+    startWriting();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (s === 'sheet') {
+    sheetEl.classList.add('open');
+    renderSheet();
+    printSheet();
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'rhyme') {
+    const w = parts[1];
+    if (!w) logMsg('rhyme what? — rhyme moon');
+    else {
+      const r = rhymesFor(w);
+      logMsg(r.length ? `rhymes with "${w}": ${r.join(' · ')}` : `nothing in the word list rhymes with "${w}"`);
+    }
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
   if (s === 'help' || s === '?') {
     showHelp();
     clearInput();
@@ -1728,7 +2021,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   // with an empty prompt and a chord holding, 1-8 pluck its tones by hand
-  if (/^[1-8]$/.test(e.key) && current && cmd.value === '' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  if (/^[1-8]$/.test(e.key) && current && !writing && cmd.value === '' && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     pluckIndex(parseInt(e.key, 10) - 1);
     return;

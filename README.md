@@ -12,8 +12,6 @@ Open `index.html` in a browser, or serve the folder:
 python3 -m http.server 4173
 ```
 
-Or on the web: https://socerest2.github.io/chord-console/
-
 Browsers block audio until you interact with the page, so click into the prompt once
 before playing.
 
@@ -66,6 +64,44 @@ Set `bpm` before recording and it uses your tempo instead of inferring one, whic
 what you want when covering a song at a known tempo.
 
 `sections` lists them, `loop delete verse` removes one.
+
+## Writing words
+
+`write` turns the prompt into a lyric sheet laid over the bars you've got. Each line
+you type fills the next bar and gets counted against that bar's beats, so you can see
+when a line is crowded or leaving space:
+
+```
+PROGRESSION                              4 bars · 4 written
+ 1  Cmaj7      woke up on the wrong side          6 syl
+ 2  Am7        of a borrowed afternoon            7 syl
+ 3  Fmaj7      the radio was playing              6 syl
+ 4  G7         something close to out of tune     8 syl
+```
+
+Type `/loop` while writing and the bar that's currently sounding is marked as it goes
+round, so you can sing against it while you work.
+
+In write mode: `back`, `next`, `del`, `sheet` to print it as plain text, `done` to
+leave. Anything starting with `/` runs a console command without dropping out.
+
+Each part keeps its own lyrics, so `verse` and `chorus` don't overwrite each other.
+
+`rhyme moon` suggests rhymes. It matches on spelling rather than pronunciation, so
+it's approximate — a nudge rather than a dictionary.
+
+## On a phone
+
+`mobile.html` is a touch version: twelve root notes laid out in fifths, so neighbours
+on the pad are neighbours in the music. Hold a root and a wheel of chord shapes fans
+out around your thumb — slide to one and release. Sliding further out swaps the shape
+for its extended version (`7` becomes `9`, `m7` becomes `m11`, and so on), and a plain
+tap gives you the major triad.
+
+The chord changes as you slide, so you can hear it move before you commit.
+
+In Safari, share sheet → **Add to Home Screen** installs it full-screen with its own
+icon. It runs entirely offline once loaded.
 
 ## Notes
 

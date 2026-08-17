@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="chords">
+<meta name="theme-color" content="#0b0e12">
+<link rel="manifest" href="manifest.json">
+<title>chord pad</title>
+<style>
+  :root {
+    --bg: #0b0e12;
+    --panel: #11151c;
+    --border: #1e2530;
+    --text: #d7e0ea;
+    --dim: #5c6a7a;
+    --accent: #6ee7a0;
+    --accent-dim: #2e6b48;
+    --amber: #f0c674;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* now playing */
+  .now {
+    flex: none;
+    text-align: center;
+    padding: 18px 12px 12px;
+  }
+  .now .name {
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--accent);
+    min-height: 50px;
+    line-height: 1;
+  }
+  .now .name.idle { color: var(--dim); opacity: .45; font-weight: 400; font-size: 26px; }
+  .now .notes {
+    margin-top: 8px;
+    color: var(--dim);
+    font-size: 13px;
+    letter-spacing: 4px;
+    min-height: 16px;
+  }
+
+  /* the pad */
+  .pad {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-auto-rows: 1fr;
+    gap: 8px;
+    padding: 8px 12px 4px;
+    min-height: 0;
+  }
+  .cell {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+    transition: background .12s, border-color .12s;
+  }
+  .cell small {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--dim);
+    margin-top: 3px;
+    letter-spacing: 1px;
+  }
+  .cell.armed {
+    background: #16241d;
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .cell.sounding { border-color: var(--accent-dim); }
+
+  /* radial picker */
+  #wheel {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .1s;
+    z-index: 10;
+  }
+  #wheel.on { opacity: 1; }
+  #wheel .veil { fill: #0b0e12; opacity: .72; }
+  #wheel .sector { fill: #151b24; stroke: #232c39; stroke-width: 1; }
+  #wheel .sector.sel { fill: #1d3a2b; stroke: var(--accent); stroke-width: 2; }
+  #wheel .lbl {
+    fill: var(--dim);
+    font: 600 var(--lbl, 12px) "SF Mono", ui-monospace, Menlo, monospace;
+    text-anchor: middle;
+    dominant-baseline: middle;
+  }
+  #wheel .lbl.sel { fill: var(--accent); }
+  #wheel .hub { fill: #16241d; stroke: var(--accent); stroke-width: 2; }
+  #wheel .hublbl {
+    fill: var(--accent);
+    font: 700 calc(var(--lbl, 12px) * 1.5) "SF Mono", ui-monospace, Menlo, monospace;
+    text-anchor: middle;
+    dominant-baseline: middle;
+  }
+  #wheel .mark { fill: var(--accent); opacity: .9; }
+  #wheel .ring {
+    fill: none;
+    stroke: #2a3442;
+    stroke-width: 1;
+    stroke-dasharray: 3 5;
+  }
+
+  /* footer */
+  .bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 14px 12px;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .bar button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 8px 16px;
+    border-radius: 8px;
+  }
+  .bar button:active { border-color: var(--accent-dim); color: var(--accent); }
+  .hint { flex: 1; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="now">
+    <div class="name idle" id="name">touch a note</div>
+    <div class="notes" id="notes"></div>
+  </div>
+
+  <div class="pad" id="pad"></div>
+
+  <div class="bar">
+    <button id="stop">stop</button>
+    <span class="hint">hold a note, slide out to shape it<br>further out adds colour</span>
+    <button id="sus">latch</button>
+  </div>
+
+  <svg id="wheel" xmlns="http://www.w3.org/2000/svg"></svg>
+
+<script>
+/* ---------------- theory ---------------- */
+const PC_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const PC_FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+
+// roots laid out in fifths, so neighbours on the pad are neighbours in the music
+const ROOTS = [
+  { pc: 0,  name: 'C',  deg: 'I'  },
+  { pc: 7,  name: 'G',  deg: 'V'  },
+  { pc: 2,  name: 'D',  deg: 'II' },
+  { pc: 9,  name: 'A',  deg: 'VI' },
+  { pc: 4,  name: 'E',  deg: 'III'},
+  { pc: 11, name: 'B',  deg: 'VII'},
+  { pc: 6,  name: 'F#', deg: '#IV'},
+  { pc: 1,  name: 'Db', deg: 'bII'},
+  { pc: 8,  name: 'Ab', deg: 'bVI'},
+  { pc: 3,  name: 'Eb', deg: 'bIII'},
+  { pc: 10, name: 'Bb', deg: 'bVII'},
+  { pc: 5,  name: 'F',  deg: 'IV' },
+];
+
+// inner ring: the eight shapes you actually reach for
+const QUALITIES = [
+  { label: 'maj',  suffix: '',      iv: [0,4,7]      },
+  { label: '7',    suffix: '7',     iv: [0,4,7,10]   },
+  { label: 'maj7', suffix: 'maj7',  iv: [0,4,7,11]   },
+  { label: 'sus4', suffix: 'sus4',  iv: [0,5,7]      },
+  { label: 'min',  suffix: 'm',     iv: [0,3,7]      },
+  { label: 'm7',   suffix: 'm7',    iv: [0,3,7,10]   },
+  { label: 'dim',  suffix: 'dim',   iv: [0,3,6]      },
+  { label: 'aug',  suffix: 'aug',   iv: [0,4,8]      },
+];
+
+// outer ring: the same shape with more colour on it
+const EXTENDED = {
+  '':     { label: 'add9', suffix: 'add9',  iv: [0,4,7,14]     },
+  '7':    { label: '9',    suffix: '9',     iv: [0,4,7,10,14]  },
+  'maj7': { label: 'maj9', suffix: 'maj9',  iv: [0,4,7,11,14]  },
+  'sus4': { label: '7sus4',suffix: '7sus4', iv: [0,5,7,10]     },
+  'm':    { label: 'm9',   suffix: 'm9',    iv: [0,3,7,10,14]  },
+  'm7':   { label: 'm11',  suffix: 'm11',   iv: [0,3,7,10,14,17] },
+  'dim':  { label: 'dim7', suffix: 'dim7',  iv: [0,3,6,9]      },
+  'aug':  { label: '7#5',  suffix: '7#5',   iv: [0,4,8,10]     },
+};
+
+// ring sizes scale to the screen — the whole wheel has to fit around your thumb
+let R_DEAD = 34, R_MID = 78, R_OUT = 122, LBL = 12;
+function sizeRings() {
+  const s = Math.min(window.innerWidth, window.innerHeight);
+  R_DEAD = Math.round(s * 0.092);
+  R_MID  = Math.round(s * 0.210);
+  R_OUT  = Math.round(s * 0.330);
+  LBL    = Math.max(10, Math.round(s * 0.032));
+  document.documentElement.style.setProperty('--lbl', LBL + 'px');
+}
+sizeRings();
+addEventListener('resize', sizeRings);
+
+/* ---------------- audio ---------------- */
+let ctx = null, master = null, held = null;
+
+function ensureCtx() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.ratio.value = 6;
+    master = ctx.createGain();
+    master.gain.value = 0.7;
+    master.connect(comp);
+    comp.connect(ctx.destination);
+  }
+  if (ctx.state === 'suspended') ctx.resume();
+}
+
+const midiToFreq = m => 440 * Math.pow(2, (m - 69) / 12);
+
+function voice(pc, iv) {
+  const midis = [36 + pc + (pc < 5 ? 12 : 0)];
+  for (const i of iv) midis.push(60 + ((pc + i) % 12));
+  return [...new Set(midis)].sort((a, b) => a - b);
+}
+
+function play(pc, iv) {
+  ensureCtx();
+  const t = ctx.currentTime;
+  release(0.45);
+  const midis = voice(pc, iv);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.connect(master);
+  const oscs = [];
+  const per = 0.9 / Math.max(midis.length, 3);
+
+  midis.forEach((m, idx) => {
+    const f = midiToFreq(m);
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(idx === 0 ? per * 1.3 : per, t + 0.03 + Math.random() * 0.02);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = Math.min(f * 6, 2200);
+    ng.connect(filt); filt.connect(g);
+    for (const d of (idx === 0 ? [0] : [-6, 6])) {
+      const o = ctx.createOscillator();
+      o.type = idx === 0 ? 'triangle' : 'sawtooth';
+      o.frequency.value = f;
+      o.detune.value = d;
+      o.connect(ng); o.start(t);
+      oscs.push(o);
+    }
+  });
+
+  g.gain.exponentialRampToValueAtTime(1, t + 0.07);
+  g.gain.exponentialRampToValueAtTime(0.75, t + 1.2);
+  held = { g, oscs, midis };
+  return midis;
+}
+
+function release(time) {
+  if (!held) return;
+  const t = ctx.currentTime;
+  const { g, oscs } = held;
+  g.gain.cancelScheduledValues(t);
+  g.gain.setValueAtTime(Math.max(g.gain.value, 0.0001), t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + time);
+  for (const o of oscs) o.stop(t + time + 0.1);
+  setTimeout(() => g.disconnect(), (time + 0.2) * 1000);
+  held = null;
+}
+
+/* ---------------- pad ---------------- */
+const padEl = document.getElementById('pad');
+const nameEl = document.getElementById('name');
+const notesEl = document.getElementById('notes');
+const wheel = document.getElementById('wheel');
+const cells = [];
+
+ROOTS.forEach((r, i) => {
+  const c = document.createElement('div');
+  c.className = 'cell';
+  c.innerHTML = '<span></span><small></small>';
+  c.children[0].textContent = r.name;
+  c.children[1].textContent = r.deg;
+  c.dataset.i = i;
+  padEl.appendChild(c);
+  cells.push(c);
+});
+
+/* ---------------- the gesture ---------------- */
+let drag = null;      // the gesture in progress
+let latch = true;     // keep the chord sounding after you let go
+let userTapped = false; // haptics are only allowed after a real touch
+
+function chordName(rootPc, suffix, flat) {
+  return (flat ? PC_FLAT : PC_SHARP)[rootPc] + suffix;
+}
+
+function resolve(dx, dy) {
+  const dist = Math.hypot(dx, dy);
+  if (dist < R_DEAD) return { q: QUALITIES[0], ext: false };
+  let a = Math.atan2(dy, dx) + Math.PI / 2;          // 0 at the top
+  if (a < 0) a += Math.PI * 2;
+  const idx = Math.floor((a / (Math.PI * 2)) * QUALITIES.length) % QUALITIES.length;
+  return { q: QUALITIES[idx], ext: dist > R_MID };
+}
+
+function pick(d) {
+  const base = d.q;
+  const ext = d.ext ? EXTENDED[base.suffix] : null;
+  return ext || base;
+}
+
+function startDrag(rootIdx, x, y) {
+  const root = ROOTS[rootIdx];
+  // The wheel is drawn where it fits on screen, but the gesture is measured from
+  // your finger — so the direction you slide is always what gets picked, even when
+  // the wheel had to shuffle away from the edge to stay visible.
+  const pad = 8;
+  const fit = (v, max) => Math.max(R_OUT + pad, Math.min(max - R_OUT - pad, v));
+  const cx = fit(x, window.innerWidth);
+  const cy = fit(y, window.innerHeight);
+  drag = { rootIdx, root, cx, cy, ox: x, oy: y, sel: null, last: '' };
+  cells.forEach(c => c.classList.remove('armed'));
+  cells[rootIdx].classList.add('armed');
+  update(x, y);
+  wheel.classList.add('on');
+}
+
+function update(x, y) {
+  if (!drag) return;
+  drag.dx = x - drag.ox;
+  drag.dy = y - drag.oy;
+  const d = resolve(drag.dx, drag.dy);
+  drag.sel = d;
+  const shape = pick(d);
+  const nm = chordName(drag.root.pc, shape.suffix, drag.root.name.includes('b'));
+  if (nm !== drag.last) {
+    drag.last = nm;
+    const midis = play(drag.root.pc, shape.iv);
+    show(nm, drag.root.pc, shape.iv, drag.root.name.includes('b'));
+    // a tick of haptic feedback where the platform allows it (Android; iOS Safari has none)
+    if (userTapped && navigator.vibrate) { try { navigator.vibrate(8); } catch (e) {} }
+  }
+  drawWheel();
+}
+
+function endDrag() {
+  if (!drag) return;
+  cells.forEach(c => c.classList.remove('armed', 'sounding'));
+  cells[drag.rootIdx].classList.add('sounding');
+  wheel.classList.remove('on');
+  if (!latch) release(0.5), show(null);
+  drag = null;
+}
+
+function show(nm, pc, iv, flat) {
+  if (!nm) {
+    nameEl.textContent = 'touch a note';
+    nameEl.classList.add('idle');
+    notesEl.textContent = '';
+    return;
+  }
+  nameEl.classList.remove('idle');
+  nameEl.textContent = nm;
+  const table = flat ? PC_FLAT : PC_SHARP;
+  notesEl.textContent = iv.map(i => table[(pc + i) % 12]).join(' ');
+}
+
+/* ---------------- drawing the wheel ---------------- */
+function arc(cx, cy, r0, r1, a0, a1) {
+  const p = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  const [x0, y0] = p(r0, a0), [x1, y1] = p(r1, a0);
+  const [x2, y2] = p(r1, a1), [x3, y3] = p(r0, a1);
+  const big = a1 - a0 > Math.PI ? 1 : 0;
+  return `M${x0} ${y0} L${x1} ${y1} A${r1} ${r1} 0 ${big} 1 ${x2} ${y2} L${x3} ${y3} A${r0} ${r0} 0 ${big} 0 ${x0} ${y0} Z`;
+}
+
+function drawWheel() {
+  if (!drag) return;
+  const { cx, cy, sel } = drag;
+  const n = QUALITIES.length;
+  const step = (Math.PI * 2) / n;
+  const parts = [`<rect class="veil" x="0" y="0" width="100%" height="100%"/>`];
+
+  for (let i = 0; i < n; i++) {
+    const a0 = -Math.PI / 2 + i * step;
+    const a1 = a0 + step;
+    const mid = a0 + step / 2;
+    const q = QUALITIES[i];
+    const selInner = sel && !sel.ext && sel.q === q;
+    const selOuter = sel && sel.ext && sel.q === q;
+
+    parts.push(`<path class="sector${selInner ? ' sel' : ''}" d="${arc(cx, cy, R_DEAD, R_MID, a0 + 0.015, a1 - 0.015)}"/>`);
+    const ex = EXTENDED[q.suffix];
+    parts.push(`<path class="sector${selOuter ? ' sel' : ''}" d="${arc(cx, cy, R_MID + 3, R_OUT, a0 + 0.015, a1 - 0.015)}"/>`);
+
+    const lr = (R_DEAD + R_MID) / 2, or = (R_MID + R_OUT) / 2 + 2;
+    parts.push(`<text class="lbl${selInner ? ' sel' : ''}" x="${cx + lr * Math.cos(mid)}" y="${cy + lr * Math.sin(mid)}">${q.label}</text>`);
+    parts.push(`<text class="lbl${selOuter ? ' sel' : ''}" x="${cx + or * Math.cos(mid)}" y="${cy + or * Math.sin(mid)}">${ex ? ex.label : ''}</text>`);
+  }
+
+  parts.push(`<circle class="hub" cx="${cx}" cy="${cy}" r="${R_DEAD - 4}"/>`);
+  parts.push(`<text class="hublbl" x="${cx}" y="${cy}">${drag.root.name}</text>`);
+
+  // where your slide currently sits, in wheel space
+  const mx = cx + (drag.dx || 0), my = cy + (drag.dy || 0);
+  if (Math.hypot(drag.dx || 0, drag.dy || 0) > R_DEAD) {
+    parts.push(`<circle class="mark" cx="${mx}" cy="${my}" r="7"/>`);
+  }
+  wheel.innerHTML = parts.join('');
+}
+
+/* ---------------- input ---------------- */
+padEl.addEventListener('pointerdown', e => {
+  const cell = e.target.closest('.cell');
+  if (!cell) return;
+  e.preventDefault();
+  if (e.isTrusted) userTapped = true;
+  try { padEl.setPointerCapture(e.pointerId); } catch (err) {}
+  startDrag(Number(cell.dataset.i), e.clientX, e.clientY);
+});
+padEl.addEventListener('pointermove', e => {
+  if (!drag) return;
+  e.preventDefault();
+  update(e.clientX, e.clientY);
+});
+padEl.addEventListener('pointerup', e => { e.preventDefault(); endDrag(); });
+padEl.addEventListener('pointercancel', () => endDrag());
+
+document.getElementById('stop').addEventListener('click', () => {
+  release(0.4);
+  show(null);
+  cells.forEach(c => c.classList.remove('sounding'));
+});
+
+const susBtn = document.getElementById('sus');
+susBtn.addEventListener('click', () => {
+  latch = !latch;
+  susBtn.textContent = latch ? 'latch' : 'momentary';
+  susBtn.style.color = latch ? '' : 'var(--amber)';
+});
+
+// stop iOS from bouncing or zooming underneath the pad
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+</script>
+</body>
+</html>
