@@ -65,6 +65,31 @@ what you want when covering a song at a known tempo.
 
 `sections` lists them, `loop delete verse` removes one.
 
+## Singing an idea in
+
+`sing` opens the microphone. Hum or sing a melody, type `done`, and it turns what it
+heard into notes:
+
+```
+> sing
+listening — hum or sing your idea, then type "done"
+> done
+heard 6 notes at 120 bpm — C4 E4 G4 F4 A4 C5
+"melody" plays it back · "harmonize" puts chords under it
+```
+
+`melody` replays the transcription. `harmonize` works out what key it's in, picks a
+chord for each bar that fits the notes you sang, and fills the progression — so
+`loop` plays your idea back as a song part.
+
+Set a tempo first (`bpm 100`) and the notes line up to it. Otherwise it estimates one
+from how you sang.
+
+This is ordinary signal processing, not a model: it finds the pitch of each frame of
+audio by normalised autocorrelation, groups frames that agree into notes, and snaps
+the lengths to the beat. It needs a reasonably quiet room and a steady hum — it
+ignores anything too faint to be sure about rather than guessing.
+
 ## Writing words
 
 `write` turns the prompt into a lyric sheet laid over the bars you've got. Each line

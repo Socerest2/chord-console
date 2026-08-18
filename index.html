@@ -1176,6 +1176,258 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+/* ---------------- listening: a hummed idea, turned into notes ----------------
+   Straight signal processing, no models: autocorrelation finds the pitch in each
+   frame of microphone audio, frames that agree get grouped into notes, and the
+   note lengths are snapped to the tempo. */
+
+const MIN_HZ = 70, MAX_HZ = 1100;   // comfortably around the human voice
+const AGREE_FRAMES = 3;             // frames that must match before a note counts
+const MIN_NOTE = 0.07;              // shorter than this is a glitch, not a note
+
+const mic = { stream: null, src: null, analyser: null, buf: null, raf: 0, on: false };
+const heard = { notes: [], cur: null, lastMidi: -1, agree: 0, t0: 0, peak: 0 };
+let melody = [];                    // the transcription: { midi, beat, beats }
+
+// Normalised square difference (McLeod's method). The normalisation is per-lag, so
+// low notes score as strongly as high ones, and picking the FIRST peak near the
+// tallest — rather than the tallest itself — keeps it from locking onto a harmonic
+// and reporting the note an octave or two too high.
+function detectPitch(buf, rate) {
+  const D = 2;                       // halve the sample rate; voices live well below Nyquist
+  const n = buf.length >> 1;
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = (buf[i * D] + buf[i * D + 1]) * 0.5;
+  const r = rate / D;
+
+  let energy = 0;
+  for (let i = 0; i < n; i++) energy += x[i] * x[i];
+  if (Math.sqrt(energy / n) < 0.012) return -1;   // silence, or too quiet to trust
+
+  const pre = new Float32Array(n + 1);            // running energy, for the per-lag norm
+  for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + x[i] * x[i];
+
+  const minLag = Math.max(2, Math.floor(r / MAX_HZ));
+  const maxLag = Math.min(Math.floor(r / MIN_HZ), n - 2);
+  if (maxLag <= minLag) return -1;
+
+  const nsdf = new Float32Array(maxLag + 2);
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let ac = 0;
+    const lim = n - lag;
+    for (let i = 0; i < lim; i++) ac += x[i] * x[i + lag];
+    const m = pre[lim] + (pre[n] - pre[lag]);
+    nsdf[lag] = m > 0 ? (2 * ac) / m : 0;
+  }
+
+  let tallest = 0;
+  const peaks = [];
+  for (let lag = minLag + 1; lag < maxLag; lag++) {
+    if (nsdf[lag] > nsdf[lag - 1] && nsdf[lag] >= nsdf[lag + 1] && nsdf[lag] > 0) {
+      peaks.push(lag);
+      if (nsdf[lag] > tallest) tallest = nsdf[lag];
+    }
+  }
+  if (!peaks.length || tallest < 0.4) return -1;
+
+  const best = peaks.find(l => nsdf[l] >= tallest * 0.85);
+  if (best === undefined) return -1;
+
+  const y1 = nsdf[best - 1], y2 = nsdf[best], y3 = nsdf[best + 1];
+  const d = y1 + y3 - 2 * y2;
+  const shift = d ? (y1 - y3) / (2 * d) : 0;
+  const hz = r / (best + (Math.abs(shift) < 1 ? shift : 0));
+  return hz >= MIN_HZ && hz <= MAX_HZ ? hz : -1;
+}
+
+const hzToMidi = hz => 69 + 12 * Math.log2(hz / 440);
+const midiName = m => PC_NAMES_SHARP[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+
+async function startListening() {
+  if (mic.on) { logMsg('already listening — "done" when you\'ve finished'); return; }
+  ensureCtx();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    logMsg('this browser has no microphone access'); return;
+  }
+  try {
+    mic.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (e) {
+    logMsg(e && e.name === 'NotAllowedError'
+      ? 'microphone blocked — allow it in the address bar and try again'
+      : 'could not open the microphone: ' + (e && e.name));
+    return;
+  }
+  mic.src = ctx.createMediaStreamSource(mic.stream);
+  mic.analyser = ctx.createAnalyser();
+  mic.analyser.fftSize = 4096;   // ~85ms of audio — enough to resolve low notes
+  mic.buf = new Float32Array(mic.analyser.fftSize);
+  mic.src.connect(mic.analyser);    // deliberately not connected to the output — no feedback
+  mic.on = true;
+  heard.notes = []; heard.cur = null; heard.lastMidi = -1; heard.agree = 0; heard.peak = 0;
+  heard.t0 = ctx.currentTime;
+  logMsg('listening — hum or sing your idea, then type "done"');
+  if (!state.bpm) logMsg('tip: set a tempo first (bpm 100) and it will line the notes up to it');
+  listenLoop();
+}
+
+function listenLoop() {
+  if (!mic.on) return;
+  mic.analyser.getFloatTimeDomainData(mic.buf);
+  const hz = detectPitch(mic.buf, ctx.sampleRate);
+  const now = ctx.currentTime;
+  const midi = hz > 0 ? Math.round(hzToMidi(hz)) : -1;
+
+  if (midi === heard.lastMidi) heard.agree++;
+  else { heard.lastMidi = midi; heard.agree = 1; }
+
+  if (heard.agree >= AGREE_FRAMES) {
+    if (midi < 0) closeNote(now);
+    else if (!heard.cur) heard.cur = { midi, start: now };
+    else if (heard.cur.midi !== midi) { closeNote(now); heard.cur = { midi, start: now }; }
+  }
+  showHeard(hz, midi);
+  mic.raf = requestAnimationFrame(listenLoop);
+}
+
+function closeNote(now) {
+  if (!heard.cur) return;
+  const dur = now - heard.cur.start;
+  if (dur >= MIN_NOTE) heard.notes.push({ midi: heard.cur.midi, start: heard.cur.start - heard.t0, dur });
+  heard.cur = null;
+}
+
+function showHeard(hz, midi) {
+  if (midi > 0) {
+    const cents = Math.round((hzToMidi(hz) - midi) * 100);
+    nowChordEl.classList.remove('idle');
+    nowChordEl.textContent = midiName(midi);
+    nowNotesEl.textContent = `${hz.toFixed(1)} Hz  ${cents >= 0 ? '+' : ''}${cents}¢`;
+  } else {
+    nowChordEl.classList.add('idle');
+    nowChordEl.textContent = 'listening…';
+    nowNotesEl.textContent = `${heard.notes.length} note${heard.notes.length === 1 ? '' : 's'} so far`;
+  }
+}
+
+function stopListening() {
+  if (!mic.on) { logMsg('not listening — type "sing" to start'); return null; }
+  mic.on = false;
+  cancelAnimationFrame(mic.raf);
+  closeNote(ctx.currentTime);
+  if (mic.stream) mic.stream.getTracks().forEach(t => t.stop());
+  mic.src && mic.src.disconnect();
+  mic.stream = mic.src = mic.analyser = null;
+  renderNow(null, []);
+  return heard.notes;
+}
+
+// snap what you sang onto the beat grid
+function transcribe(notes) {
+  if (!notes.length) return [];
+  let bpm = state.bpm;
+  if (!bpm) {
+    // no tempo set: assume the shortest sung note was an eighth
+    const shortest = Math.min(...notes.map(n => n.dur));
+    bpm = Math.round(Math.max(50, Math.min(190, 30 / Math.max(shortest, 0.08))));
+    state.bpm = bpm;
+    logMsg(`no tempo was set — going with ${bpm} bpm from how you sang it`);
+  }
+  const bl = 60 / bpm;
+  const t0 = notes[0].start;
+  return notes.map(n => ({
+    midi: n.midi,
+    beat: Math.max(0, Math.round(((n.start - t0) / bl) * 2) / 2),   // to the nearest eighth
+    // capped at two bars: a note held that long is a stuck mic, not a musical idea
+    beats: Math.min(8, Math.max(0.5, Math.round((n.dur / bl) * 2) / 2)),
+  }));
+}
+
+function finishSinging() {
+  const raw = stopListening();
+  if (!raw) return;
+  if (!raw.length) { logMsg('did not hear a clear pitch — try humming louder, closer, and steadier'); return; }
+  melody = transcribe(raw);
+  const shape = melody.map(n => midiName(n.midi)).join(' ');
+  logMsg(`heard ${melody.length} notes at ${state.bpm} bpm — ${shape}`);
+  logMsg('"melody" plays it back · "harmonize" puts chords under it');
+  playMelody(melody);
+}
+
+function addHarmony() {
+  if (!melody.length) { logMsg('nothing sung yet — type "sing" and hum something first'); return; }
+  const h = harmonize(melody);
+  if (!h.chords || !h.chords.length) { logMsg('could not find chords for that'); return; }
+  state.key = { pc: h.key.pc, minor: h.key.minor, flat: false };
+  state.prog = h.chords;
+  state.progBeats = [];
+  state.loopPos = 0;
+  state.loopNextBeat = 0;
+  renderChips(); renderProg(-1); renderStatus();
+  const names = h.chords.map(c => parseChord(c).name).join(' ');
+  logMsg(`sounds like ${keyNoteName(h.key.pc)}${h.key.minor ? ' minor' : ' major'} — ${names}`);
+  logMsg('type "loop" to hear it, or "melody" to hear what you sang over it');
+}
+
+function playMelody(mel) {
+  if (!mel.length) return;
+  ensureCtx();
+  const bl = 60 / (state.bpm || 100);
+  const t0 = ctx.currentTime + 0.15;
+  for (const n of mel) pluck(n.midi, 0.22, t0 + n.beat * bl);
+}
+
+/* ---- what fits underneath it ---- */
+// score every key by how much of the melody sits inside its scale
+function guessKey(mel) {
+  let best = null;
+  for (let pc = 0; pc < 12; pc++) {
+    for (const minor of [false, true]) {
+      const scale = minor ? MIN_SCALE : MAJ_SCALE;
+      let score = 0;
+      for (const n of mel) {
+        const deg = ((n.midi - pc) % 12 + 12) % 12;
+        if (scale.includes(deg)) score += n.beats;
+        else score -= n.beats * 0.5;
+        if (deg === 0) score += n.beats * 0.3;   // the tonic carries weight
+      }
+      if (!best || score > best.score) best = { pc, minor, score };
+    }
+  }
+  return best;
+}
+
+// pick, for each bar, the diatonic chord that best covers the notes in it
+function harmonize(mel) {
+  if (!mel.length) return [];
+  const key = guessKey(mel);
+  const scale = key.minor ? MIN_SCALE : MAJ_SCALE;
+  const quals = key.minor ? MIN_TRIADS : MAJ_TRIADS;
+  const bars = Math.max(1, Math.ceil(Math.max(...mel.map(n => n.beat + n.beats)) / 4));
+  const out = [];
+
+  for (let bar = 0; bar < bars; bar++) {
+    const inBar = mel.filter(n => n.beat < (bar + 1) * 4 && n.beat + n.beats > bar * 4);
+    if (!inBar.length) { out.push(out[out.length - 1] || null); continue; }
+    let best = null;
+    scale.forEach((off, deg) => {
+      const rootPc = (key.pc + off) % 12;
+      const chord = parseChord(PC_NAMES_SHARP[rootPc].toLowerCase() + quals[deg]);
+      if (!chord) return;
+      let score = 0;
+      for (const n of inBar) {
+        const pc = ((n.midi % 12) + 12) % 12;
+        const w = n.beats * (n.beat <= bar * 4 + 0.5 ? 1.4 : 1);  // downbeats matter more
+        score += chord.pcs.includes(pc) ? w : -w * 0.6;
+      }
+      if (!best || score > best.score) best = { score, str: PC_NAMES_SHARP[rootPc].toLowerCase() + quals[deg] };
+    });
+    out.push(best ? best.str : null);
+  }
+  return { key, chords: out.filter(Boolean) };
+}
+
 /* ---------------- writing words to the music ---------------- */
 let writing = false;   // typing goes to the lyric sheet instead of the chord prompt
 let writeSlot = 0;     // which bar you're writing into
@@ -1700,6 +1952,8 @@ const HELP = [
   'prog      prog c am f g sets one outright · clear empties it',
   'loop      loop · loop 2 (bars per chord) · loop off — plays the progression',
   'fill      fill drops a drum fill now · fill big · fill on for automatic ones',
+  'sing      sing — hum an idea into the mic, "done" turns it into notes',
+  '          melody replays it · harmonize puts chords under it and fills the progression',
   'write     write — put words in each bar, with syllable counts against the beats',
   '          in there: back · next · del · sheet · /cmd runs a command · done',
   'rhyme     rhyme moon — approximate, spelling-based, just for a nudge',
@@ -1891,6 +2145,31 @@ function submit(raw) {
     if (!transportNeeded()) stopTransport();
     renderStatus();
     logMsg(`click ${state.click ? 'on' : 'off'}`);
+    clearInput();
+    return;
+  }
+  if (parts[0] === 'sing' || parts[0] === 'hum' || parts[0] === 'listen') {
+    if (parts[1] === 'stop' || parts[1] === 'off') finishSinging();
+    else startListening();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if ((s === 'done' || s === 'end') && mic.on) {
+    finishSinging();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (s === 'melody' || s === 'replay') {
+    if (!melody.length) logMsg('nothing sung yet — type "sing" and hum something');
+    else { playMelody(melody); logMsg(`${melody.length} notes`); }
+    clearInput();
+    return;
+  }
+  if (s === 'harmonize' || s === 'chords') {
+    addHarmony();
+    history.push(s); histIdx = history.length;
     clearInput();
     return;
   }
