@@ -65,6 +65,30 @@ what you want when covering a song at a known tempo.
 
 `sections` lists them, `loop delete verse` removes one.
 
+## The beat
+
+A step grid on the same clock as the chords, so a drum track and a chord loop stay
+locked together.
+
+```
+beat funk                    a starting point
+kick x...x...x...x...        or set a lane yourself
+beat swing 30                push the offbeats late
+beat off
+```
+
+Presets: `basic` `rock` `four` `funk` `trap` `boom` `bossa`. Lanes: `kick` `snare`
+`hat` `open` `clap` `tom` — each takes a string of sixteenths where `x` is a hit and
+`.` is a rest. Short patterns repeat to fill the bar, so `kick x...` gives you four
+on the floor. Click cells in the grid to toggle them, click a lane name to clear it.
+
+`tap` plays one in live against the click: **k** kick, **s** snare, **h** hat,
+**o** open hat, **c** clap, **t** tom. Each hit lands on the nearest sixteenth.
+`done` when you have it.
+
+`beat bars 2` for a two-bar pattern, `beat show` prints it as text, `beat clear`
+empties it.
+
 ## Singing an idea in
 
 `sing` opens the microphone. Hum or sing a melody, type `done`, and it turns what it

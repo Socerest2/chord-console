@@ -240,6 +240,42 @@
   .sheet .sy.tight { color: #e0864c; }
   .sheet .sy.roomy { color: #5c8fb8; }
 
+  /* step grid */
+  .grid {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 11px;
+    overflow-x: auto;
+  }
+  .grid.open { display: block; }
+  .grid table { border-collapse: separate; border-spacing: 2px; }
+  .grid td { padding: 0; }
+  .grid .lane {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 1px;
+    padding-right: 8px;
+    text-align: right;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .grid .lane:hover { color: var(--text); }
+  .grid .cell {
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+    background: #161c26;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .grid .cell.beatline { background: #1a212c; }
+  .grid .cell.on { background: var(--accent); }
+  .grid .cell.on.off4 { background: var(--accent-dim); }
+  .grid .cell.playing { border-color: var(--amber); }
+  .grid .ticks td { color: var(--dim); font-size: 9px; text-align: center; height: 12px; }
+
   /* status bar */
   .status {
     display: flex;
@@ -306,6 +342,7 @@
   <div class="prog" id="sections"></div>
   <div class="prog" id="prog"></div>
 
+  <div class="grid" id="grid"></div>
   <div class="sheet" id="sheet"></div>
 
   <div class="log" id="log">
@@ -315,6 +352,7 @@
     <div class="hint">feel: roll · arp · noodle · pluck 1 3 5 3 — or tap 1-8 by hand</div>
     <div class="hint">keep one for the progression: cmaj7 p — or p on to keep them all</div>
     <div class="hint">parts: loop start verse → play it → loop end, then just type verse</div>
+    <div class="hint">beat: beat funk · kick x...x...x...x... · tap to play one in</div>
   </div>
 
   <div class="console">
@@ -584,6 +622,9 @@ function releaseCurrent(release) {
 
 function stopAll() {
   stopPattern();
+  beatMachine.on = false;
+  tapping.on = false;
+  renderBeat();
   state.loop = false;
   state.click = false;
   state.pending = null;
@@ -763,6 +804,41 @@ function drumHit(kind, time, vel = 1) {
     og.gain.setValueAtTime(0.18 * vel, t);
     og.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
     o.connect(og); og.connect(master); o.start(t); o.stop(t + 0.12);
+  } else if (kind === 'clap') {
+    // three quick bursts of filtered noise — that's what gives a clap its slap
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1200; bp.Q.value = 1.4;
+    bp.connect(g);
+    g.gain.setValueAtTime(0.0001, t);
+    for (let i = 0; i < 3; i++) {
+      const n = noise();
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.28 * vel, t + i * 0.011);
+      ng.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.011 + 0.035);
+      n.connect(ng); ng.connect(bp);
+      n.start(t + i * 0.011); n.stop(t + i * 0.011 + 0.05);
+    }
+    g.gain.setValueAtTime(1, t);
+    const tail = noise();
+    const tg = ctx.createGain();
+    tg.gain.setValueAtTime(0.12 * vel, t + 0.033);
+    tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
+    tail.connect(tg); tg.connect(bp); tail.start(t + 0.033); tail.stop(t + 0.21);
+  } else if (kind === 'tom') {
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(220, t);
+    o.frequency.exponentialRampToValueAtTime(95, t + 0.22);
+    g.gain.setValueAtTime(0.36 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    o.connect(g); o.start(t); o.stop(t + 0.32);
+  } else if (kind === 'open') {
+    const n = noise();
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 6500;
+    g.gain.setValueAtTime(0.11 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    n.connect(hp); hp.connect(g); n.start(t); n.stop(t + 0.33);
   } else { // hat
     const n = noise();
     const hp = ctx.createBiquadFilter();
@@ -786,7 +862,158 @@ function drumFill(time, big) {
   }
 }
 
-/* ---------------- transport (clock for the click, loop & fills) ---------------- */
+/* ---------------- the beat ----------------
+   A step grid running on the same clock as the chords, so a drum track and a
+   chord loop stay locked together. Each lane is a string of sixteenths. */
+
+const LANES = ['kick', 'snare', 'hat', 'open', 'clap', 'tom'];
+const LANE_LABEL = { kick: 'kick', snare: 'snre', hat: 'hat', open: 'ohat', clap: 'clap', tom: 'tom' };
+
+const beatMachine = {
+  on: false,
+  bars: 1,
+  lanes: Object.fromEntries(LANES.map(l => [l, ''])),   // '' = empty lane
+  step: 0,          // where the playhead is
+  swing: 0,         // 0–0.6, how far the offbeat sixteenths get pushed late
+  ref: null,        // { t, beat } — a known beat's audio time, for timing taps
+};
+
+const beatSteps = () => beatMachine.bars * 16;
+
+function blankLane() { return '.'.repeat(beatSteps()); }
+
+function laneAt(name) {
+  const s = beatMachine.lanes[name] || '';
+  return s.length === beatSteps() ? s : (s + blankLane()).slice(0, beatSteps());
+}
+
+function setLane(name, pattern) {
+  // accepts x . - and spaces; anything that isn't a rest counts as a hit
+  const cleaned = pattern.replace(/[\s|]/g, '').split('').map(c => '.-_0'.includes(c) ? '.' : 'x').join('');
+  if (!cleaned.length) { beatMachine.lanes[name] = ''; renderBeat(); return true; }
+  // let a short pattern repeat to fill the bar, so "x..." fills all sixteen
+  let out = cleaned;
+  while (out.length < beatSteps()) out += cleaned;
+  beatMachine.lanes[name] = out.slice(0, beatSteps());
+  renderBeat();
+  return true;
+}
+
+const BEAT_PRESETS = {
+  basic: { kick: 'x.......x.......', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+  rock:  { kick: 'x.....x.....x...', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+  four:  { kick: 'x...x...x...x...', snare: '....x.......x...', hat: '..x...x...x...x.', clap: '....x.......x...' },
+  funk:  { kick: 'x..x....x.x.....', snare: '....x......x.x..', hat: 'xxx.xxx.xxx.xxx.' },
+  trap:  { kick: 'x.....x...x.....', snare: '........x.......', hat: 'xxxxxxxxxxxxxxxx', clap: '........x.......' },
+  boom:  { kick: 'x...x..x..x.....', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+  bossa: { kick: 'x.....x.x.....x.', snare: '..x..x..x..x..x.', hat: 'x.x.x.x.x.x.x.x.' },
+};
+
+function loadPreset(name) {
+  const p = BEAT_PRESETS[name];
+  if (!p) { logMsg(`beats: ${Object.keys(BEAT_PRESETS).join(' · ')}`); return false; }
+  beatMachine.bars = 1;
+  for (const l of LANES) beatMachine.lanes[l] = '';
+  for (const [l, pat] of Object.entries(p)) setLane(l, pat);
+  return true;
+}
+
+function startBeat() {
+  if (!Object.values(beatMachine.lanes).some(Boolean)) {
+    logMsg('no beat yet — try "beat rock", or tap one in with "tap"');
+    return;
+  }
+  if (!state.bpm) { state.bpm = 100; state.click = false; logMsg('no tempo set — using bpm 100'); }
+  beatMachine.on = true;
+  state.click = false;      // the kit keeps time now
+  startTransport(false);
+  renderBeat(); renderStatus();
+  logMsg(`beat on — ${beatMachine.bars} bar${beatMachine.bars > 1 ? 's' : ''}${beatMachine.swing ? `, swing ${Math.round(beatMachine.swing * 100)}%` : ''}`);
+}
+
+function printBeat() {
+  logMsg(`— beat · ${beatMachine.bars} bar${beatMachine.bars > 1 ? 's' : ''} ·` +
+         ` ${state.bpm || '—'} bpm${beatMachine.swing ? ` · swing ${Math.round(beatMachine.swing * 100)}%` : ''} —`);
+  for (const lane of LANES) {
+    if (!beatMachine.lanes[lane]) continue;
+    logMsg(`${LANE_LABEL[lane].padEnd(5)} ${laneAt(lane)}`);
+  }
+}
+
+/* tap a beat in by hand: hit the keys in time and it lands them on the grid */
+const tapping = { on: false };
+const TAP_KEYS = { k: 'kick', s: 'snare', h: 'hat', o: 'open', c: 'clap', t: 'tom' };
+
+function startTapping() {
+  if (!state.bpm) { state.bpm = 100; logMsg('no tempo set — using bpm 100'); }
+  if (!Object.values(beatMachine.lanes).some(Boolean)) for (const l of LANES) beatMachine.lanes[l] = blankLane();
+  tapping.on = true;
+  beatMachine.on = true;
+  state.click = true;          // click on, so you have something to play against
+  startTransport(false);
+  renderBeat(); renderStatus();
+  logMsg('tap it in — k kick · s snare · h hat · o open hat · c clap · t tom');
+  logMsg('each hit lands on the nearest sixteenth · "done" when you have it');
+}
+
+function stopTapping() {
+  tapping.on = false;
+  state.click = false;
+  renderStatus();
+  logMsg('tapped in — "beat show" prints it, "beat off" stops it');
+}
+
+// Which step is sounding *right now*. The transport schedules ahead of itself, so
+// this works off a reference point — the audio time of a known beat — rather than
+// the scheduling frontier, which runs up to 200ms into the future.
+function currentStep() {
+  const ref = beatMachine.ref;
+  if (!ctx || !ref) return 0;
+  const beatsFromRef = (ctx.currentTime - ref.t) / beatLen();
+  const step = Math.round((ref.beat + beatsFromRef) * 4);
+  const n = beatSteps();
+  return ((step % n) + n) % n;
+}
+
+function tapHit(lane) {
+  const step = currentStep();
+  const pat = laneAt(lane).split('');
+  pat[step] = 'x';
+  beatMachine.lanes[lane] = pat.join('');
+  drumHit(lane, ctx.currentTime, 0.95);
+  renderBeat();
+}
+
+function stopBeat() {
+  beatMachine.on = false;
+  if (!transportNeeded()) stopTransport();
+  renderBeat(); renderStatus();
+  logMsg('beat off');
+}
+
+// fire the four sixteenths that live inside this beat
+function scheduleBeatSteps(t, absBeat) {
+  const sixteenth = beatLen() / 4;
+  const stepBase = (absBeat % (beatMachine.bars * 4)) * 4;
+  for (let i = 0; i < 4; i++) {
+    const step = stepBase + i;
+    // Swing pushes the back half of each beat late — the offbeat eighth most of all,
+    // odd sixteenths half as much. That's what keeps it from sounding like a machine.
+    const sw = beatMachine.swing;
+    const push = (step % 4 === 2) ? sw * sixteenth
+               : (step % 2 === 1) ? sw * sixteenth * 0.5
+               : 0;
+    const when = t + i * sixteenth + push;
+    for (const lane of LANES) {
+      if (laneAt(lane)[step] === 'x') {
+        const accent = step % 4 === 0 ? 1 : (step % 2 === 0 ? 0.85 : 0.7);
+        drumHit(lane, when, accent);
+      }
+    }
+  }
+}
+
+/* ---------------- transport (clock for the click, loop, beat & fills) ---------------- */
 const transport = { next: 0, beat: 0, timer: null };
 
 function clickSound(time, accent) {
@@ -801,7 +1028,7 @@ function clickSound(time, accent) {
 }
 
 function transportNeeded() {
-  return state.bpm > 0 && (state.click || state.loop);
+  return state.bpm > 0 && (state.click || state.loop || beatMachine.on);
 }
 
 // how many beats chord #i holds — learned from your playing, or the uniform bar count
@@ -833,6 +1060,12 @@ function transportTick() {
 
     if (state.click) clickSound(t, beat % 4 === 0);
     flashBeat(beat % 4, delayMs);
+    if (beatMachine.on) {
+      beatMachine.ref = { t, beat };   // anchor for working out what's sounding now
+      scheduleBeatSteps(t, beat);
+      const at = (beat % (beatMachine.bars * 4)) * 4;
+      setTimeout(() => { beatMachine.step = at; markBeatStep(at); }, Math.max(0, delayMs));
+    }
 
     if (state.loop && state.prog.length) {
       if (beat >= state.loopNextBeat) {
@@ -1705,6 +1938,7 @@ const beatsEl = document.getElementById('beats');
 const progEl = document.getElementById('prog');
 const sectionsEl = document.getElementById('sections');
 const sheetEl = document.getElementById('sheet');
+const gridEl = document.getElementById('grid');
 const fillPill = document.getElementById('fillPill');
 const recBadge = document.getElementById('recBadge');
 const recTime = document.getElementById('recTime');
@@ -1850,6 +2084,60 @@ function renderSections() {
   sectionsEl.classList.add('open');
 }
 
+function renderBeat() {
+  const used = Object.values(beatMachine.lanes).some(Boolean);
+  if (!used && !beatMachine.on) { gridEl.classList.remove('open'); gridEl.innerHTML = ''; return; }
+  const steps = beatSteps();
+  const rows = [];
+
+  for (const lane of LANES) {
+    const pat = laneAt(lane);
+    const cells = [];
+    for (let i = 0; i < steps; i++) {
+      const cls = ['cell'];
+      if (pat[i] === 'x') cls.push('on');
+      if (Math.floor(i / 4) % 2 === 1) cls.push('beatline');
+      if (i % 4 !== 0) cls.push('off4');
+      cells.push(`<td><div class="${cls.join(' ')}" data-lane="${lane}" data-step="${i}"></div></td>`);
+    }
+    rows.push(`<tr><td class="lane" data-clear="${lane}">${LANE_LABEL[lane]}</td>${cells.join('')}</tr>`);
+  }
+
+  const ticks = [];
+  for (let i = 0; i < steps; i++) ticks.push(`<td>${i % 4 === 0 ? (i / 4) + 1 : ''}</td>`);
+  rows.push(`<tr class="ticks"><td></td>${ticks.join('')}</tr>`);
+
+  gridEl.innerHTML = `<table>${rows.join('')}</table>`;
+  gridEl.classList.add('open');
+
+  gridEl.querySelectorAll('.cell').forEach(c => {
+    c.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const lane = c.dataset.lane, i = Number(c.dataset.step);
+      const pat = laneAt(lane).split('');
+      pat[i] = pat[i] === 'x' ? '.' : 'x';
+      beatMachine.lanes[lane] = pat.join('');
+      if (pat[i] === 'x') drumHit(lane, ctx ? ctx.currentTime : 0, 0.9);
+      renderBeat();
+    });
+  });
+  gridEl.querySelectorAll('.lane').forEach(l => {
+    l.addEventListener('mousedown', e => {
+      e.preventDefault();
+      beatMachine.lanes[l.dataset.clear] = '';
+      renderBeat();
+    });
+  });
+  markBeatStep(beatMachine.step);
+}
+
+function markBeatStep(step) {
+  if (!gridEl.classList.contains('open')) return;
+  gridEl.querySelectorAll('.cell').forEach(c => {
+    c.classList.toggle('playing', beatMachine.on && Number(c.dataset.step) === step);
+  });
+}
+
 function flashBeat(beat, delayMs) {
   setTimeout(() => {
     [...beatsEl.children].forEach((dot, i) => dot.classList.toggle('on', i === beat));
@@ -1952,6 +2240,9 @@ const HELP = [
   'prog      prog c am f g sets one outright · clear empties it',
   'loop      loop · loop 2 (bars per chord) · loop off — plays the progression',
   'fill      fill drops a drum fill now · fill big · fill on for automatic ones',
+  'beat      beat rock · funk · trap · boom · four · bossa · basic — then beat off',
+  '          kick x...x...x...x... sets a lane by hand (also snare hat open clap tom)',
+  '          click the grid · tap plays one in live · beat swing 30 · beat bars 2',
   'sing      sing — hum an idea into the mic, "done" turns it into notes',
   '          melody replays it · harmonize puts chords under it and fills the progression',
   'write     write — put words in each bar, with syllable counts against the beats',
@@ -2148,9 +2439,54 @@ function submit(raw) {
     clearInput();
     return;
   }
+  if (parts[0] === 'beat' || parts[0] === 'drums') {
+    const a = parts[1];
+    if (!a) startBeat();
+    else if (a === 'off' || a === 'stop') stopBeat();
+    else if (a === 'clear') {
+      for (const l of LANES) beatMachine.lanes[l] = '';
+      beatMachine.on = false;
+      if (!transportNeeded()) stopTransport();
+      renderBeat(); renderStatus(); logMsg('beat cleared');
+    }
+    else if (a === 'bars') {
+      const n = parseInt(parts[2], 10);
+      if (n === 1 || n === 2) { beatMachine.bars = n; renderBeat(); logMsg(`beat is ${n} bar${n > 1 ? 's' : ''} long`); }
+      else logMsg('beat bars 1  or  beat bars 2');
+    }
+    else if (a === 'swing') {
+      const n = parseInt(parts[2], 10);
+      if (isNaN(n) || n < 0 || n > 60) logMsg('swing takes 0–60: beat swing 30');
+      else { beatMachine.swing = n / 100; logMsg(`swing ${n}%`); }
+    }
+    else if (a === 'show') { renderBeat(); printBeat(); }
+    else if (loadPreset(a)) { startBeat(); }
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (LANES.includes(parts[0])) {
+    if (parts.length < 2) { logMsg(`${parts[0]} x...x...x...x...  (x is a hit, . is a rest)`); }
+    else { setLane(parts[0], parts.slice(1).join('')); logMsg(`${parts[0]} ${laneAt(parts[0])}`); }
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if (s === 'tap') {
+    startTapping();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
   if (parts[0] === 'sing' || parts[0] === 'hum' || parts[0] === 'listen') {
     if (parts[1] === 'stop' || parts[1] === 'off') finishSinging();
     else startListening();
+    history.push(s); histIdx = history.length;
+    clearInput();
+    return;
+  }
+  if ((s === 'done' || s === 'end') && tapping.on) {
+    stopTapping();
     history.push(s); histIdx = history.length;
     clearInput();
     return;
@@ -2297,6 +2633,13 @@ document.addEventListener('keydown', e => {
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     e.preventDefault();
     setOctave(e.key === 'ArrowUp' ? 'up' : 'down');
+    return;
+  }
+  // while tapping a beat in, the drum keys play and record on an empty prompt
+  if (tapping.on && cmd.value === '' && !e.metaKey && !e.ctrlKey && !e.altKey
+      && TAP_KEYS[e.key.toLowerCase()]) {
+    e.preventDefault();
+    tapHit(TAP_KEYS[e.key.toLowerCase()]);
     return;
   }
   // with an empty prompt and a chord holding, 1-8 pluck its tones by hand
